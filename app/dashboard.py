@@ -75,7 +75,7 @@ def monitor():
     diagnoses = [e for e in events if e["kind"] == "diagnosis"]
     plans = [e for e in events if e["kind"] == "trial_plan"]
     evaluations = [e for e in events if e["kind"] == "evaluation"]
-    with st.expander("LLM: output và lần gọi của từng agent", expanded=state["analysis_mode"] == "openrouter"):
+    with st.expander("LLM: output và lần gọi của từng agent", expanded=state["analysis_mode"] in ("openrouter", "local")):
         st.caption("Chỉ hiển thị các bước đã chạy. Run cũ có thể chưa có log Planner/Evaluation.")
         for kind, name, output_key in (("diagnosis", "Analysis", "diagnosis"),
                                        ("planning", "Planner", "trials"),

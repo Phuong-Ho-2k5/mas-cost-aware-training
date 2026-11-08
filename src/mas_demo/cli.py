@@ -11,6 +11,7 @@ from mas_demo.execution.local import LocalBackend
 from mas_demo.io import read_json, write_json
 from mas_demo.orchestration import run
 from mas_demo.training.worker import resolve_device
+from mas_demo.llm.settings import create_gateway
 
 
 def load_spec(path):
@@ -33,8 +34,8 @@ def main():
         if name != "prepare":
             cmd.add_argument("--output")
         if name == "run":
-            cmd.add_argument("--analysis", choices=["openrouter"],
-                             help="Compatibility option; all three agents always use OpenRouter")
+            cmd.add_argument("--analysis", choices=["openrouter", "local"],
+                             help="LLM backend shared by all three agents")
     resume = sub.add_parser("resume")
     resume.add_argument("output")
     stop = sub.add_parser("stop")
@@ -49,19 +50,26 @@ def main():
         return
     if args.command == "resume":
         spec = TaskSpec.model_validate(read_json(Path(args.output)/"config.json"))
-        if not os.environ.get("OPENROUTER_API_KEY", "").strip():
-            parser.error("Set OPENROUTER_API_KEY in .env or the process environment; all agents require the LLM API")
+        try:
+            create_gateway(spec)
+        except ValueError as error:
+            parser.error(str(error))
         flag = Path(args.output)/"stop.flag"
         flag.unlink(missing_ok=True)
         result = run(spec, args.output, resume=True)
     else:
         spec = load_spec(args.config)
-        if args.command == "run" and not os.environ.get("OPENROUTER_API_KEY", "").strip():
-            parser.error("Set OPENROUTER_API_KEY in .env or the process environment; all agents require the LLM API")
         if args.device:
             spec.device = args.device
         if args.command == "run" and args.analysis:
             spec.analysis_mode = args.analysis
+            if args.analysis == "local" and spec.model_id == TaskSpec().model_id:
+                spec.model_id = "Qwen/Qwen2.5-0.5B-Instruct"
+        if args.command == "run":
+            try:
+                create_gateway(spec)
+            except ValueError as error:
+                parser.error(str(error))
         spec.device = resolve_device(spec.device)
         if args.command == "prepare":
             manifest = prepare_data(spec)

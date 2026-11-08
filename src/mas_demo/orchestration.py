@@ -16,11 +16,11 @@ from mas_demo.io import append_event, read_json, write_json
 from mas_demo.memory.store import MemoryStore, settings_context
 from mas_demo.observation.collector import build_evidence
 from mas_demo.training.worker import resolve_device
+from mas_demo.llm.settings import create_gateway
 
 
 def run(spec, directory, resume=False, backend=None, gateway=None):
-    if gateway is None and not os.environ.get("OPENROUTER_API_KEY", "").strip():
-        raise ValueError("OPENROUTER_API_KEY is required; all agents use the LLM API")
+    gateway = gateway or create_gateway(spec)
     directory = Path(directory).resolve()
     directory.mkdir(parents=True, exist_ok=True)
     with FileLock(str(directory/"run.lock"), timeout=0):

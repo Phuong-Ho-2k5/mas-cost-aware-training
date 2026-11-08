@@ -77,11 +77,82 @@ Gọi Analysis ở mỗi cửa sổ quan sát đủ dữ liệu, kể cả chưa
 LLM có thể ABSTAIN. Gọi Planner khi có diagnosis hợp lệ và còn horizon;
 gọi Evaluation sau verification. Khi gateway retry có thể có thêm một HTTP attempt.
 Output và metadata (model, usage, latency, attempts, error) nằm trong events.jsonl và dashboard.
-CLI yêu cầu key trước khi run/resume, kể cả smoke CPU. `prepare`/`profile` chỉ chuẩn bị/đo training,
+Với backend OpenRouter, CLI yêu cầu key trước khi run/resume, kể cả smoke CPU. `prepare`/`profile` chỉ chuẩn bị/đo training,
 không gọi agent nên không cần key. `--analysis openrouter` vẫn được chấp nhận cho lệnh cũ;
 `--analysis heuristic` và config heuristic bị từ chối. Run heuristic lịch sử vẫn xem được trên
 dashboard nhưng không resume bằng phiên bản này; hãy tạo run mới. Không commit key hoặc `.env`.
 Xem [schema output của từng agent](docs/llm-agent-contracts.md) cho ví dụ JSON và ràng buộc.
+
+## Self-host Qwen trên Windows
+
+Hỗ trợ đúng checkpoint `Qwen/Qwen2.5-0.5B-Instruct`, revision
+`7ae557604adf67be50417f59c2c2f167def9a775`, qua Transformers và JSON-schema constrained decoding.
+Một model phục vụ cả ba agent. Backend local không dùng key OpenRouter và không fallback sang cloud.
+Allowlist training hiện tại vẫn được giữ; cơ chế tự sinh training config là phần phát triển riêng.
+
+Sau khi cài môi trường MAS bằng `scripts/setup.ps1`:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/setup_local_llm.ps1
+powershell -ExecutionPolicy Bypass -File scripts/start_local_llm.ps1 -Device cuda
+```
+
+Server venv nằm ở `tmp/llm-server-venv/` và dùng lại CUDA PyTorch từ `.venv/`;
+cần giữ môi trường `.venv` gốc. Model/cache mặc định ở `D:\HK261\model-cache`, ngoài repo;
+có thể đổi bằng `-ModelCache` cho cả setup và start. Chọn `-Device cpu` nếu cần dành GPU cho training.
+Trên máy mới, `pip install -e ".[dev,local-llm]"` cũng cài các thư viện cần thiết vào môi trường đã có
+PyTorch phù hợp; có thể chạy `python -m uvicorn services.local_llm.server:app --host 127.0.0.1 --port 8000 --workers 1`
+từ thư mục repo, sau khi đặt `HF_HOME` ngoài repo và `LOCAL_LLM_DEVICE=cpu` hoặc `cuda`.
+
+Terminal thứ hai:
+
+```powershell
+$env:LLM_BASE_URL = 'http://127.0.0.1:8000/v1'
+.venv/Scripts/python -m mas_demo.cli run --config configs/local_qwen_smoke.yaml --output artifacts/local-smoke
+.venv/Scripts/python -m mas_demo.cli run --config configs/local_qwen_cifar.yaml --output artifacts/local-cifar
+tmp/llm-server-venv/Scripts/python scripts/check_local_agents.py
+```
+
+Hai config mới dùng **CPU training** để tránh tranh VRAM 4 GB với model. Smoke dùng synthetic data;
+config CIFAR chạy subset thật. Đổi output directory ở mỗi lần chạy. `Ctrl+C` ở terminal server để dừng.
+Đừng chạy benchmark và training cùng lúc nếu muốn đo latency inference riêng biệt.
+
+`.env.example` có `LLM_BASE_URL`, `LLM_API_KEY` tùy chọn và timeout; config YAML chọn
+`analysis_mode: local`, `model_id: Qwen/Qwen2.5-0.5B-Instruct`. Server local đi kèm không yêu cầu key và
+chỉ bind loopback. Nếu dùng endpoint vLLM bên ngoài có authentication, đặt key trong `.env`, không trong YAML.
+Local request chỉ thử một lần, mặc định timeout 120 giây/deadline 130 giây, tối đa 1024 output tokens.
+Local schema khai báo reason/cause tối đa 160 ký tự và tối đa một hypothesis để giới hạn độ dài;
+OpenRouter giữ hợp đồng cũ. Server giới hạn tổng context 4096 tokens, output 2048 tokens,
+generation 90 giây, một inference đang chạy và một request chờ. Request vượt context bị từ chối, không cắt evidence.
+Chỉ hỗ trợ chat không streaming, temperature 0 và JSON Schema subset dùng trong ba agent;
+schema lạ, external/recursive references, output bị cắt hoặc không hợp lệ đều trả lỗi rõ ràng.
+Giới hạn thời gian generation được kiểm tra giữa các token; không bảo đảm ngắt tức thì một CUDA kernel bị treo.
+
+Kiểm tra và benchmark (không cần cloud):
+
+```powershell
+# Profile tải model và hai lần inference, không cần API server; dừng server trước để tránh load hai model.
+$env:HF_HOME = 'D:\HK261\model-cache\huggingface'
+tmp/llm-server-venv/Scripts/python scripts/check_local_qwen.py --device cuda --output artifacts/qwen-profile.json
+# 30 tình huống x 3 lượt; lưu output thô và số đo trước fallback.
+tmp/llm-server-venv/Scripts/python scripts/benchmark_local_agents.py --output artifacts/qwen-benchmark
+# Pilot CIFAR thật, ba seed, paired no-intervention/local LLM. Chạy riêng với benchmark ở trên.
+tmp/llm-server-venv/Scripts/python scripts/compare_local_training.py --output artifacts/qwen-training-pilot
+# Đặt temp/basetemp ở ổ còn chỗ, đặc biệt khi ổ C: gần đầy.
+$env:TEMP = "$PWD\tmp"
+$env:TMP = $env:TEMP
+tmp/llm-server-venv/Scripts/python -m pytest --basetemp=tmp/pytest-local-check -q
+```
+
+`report.json` tách JSON Schema hợp lệ, quyết định qua validator và đúng kỳ vọng theo từng vai trò;
+fallback ABSTAIN/INCONCLUSIVE không được tính thành model trả lời đúng. Kỳ vọng Analysis/Planner trong
+fixture là nhãn demo do người viết đặt, không phải ground truth nguyên nhân đã được kiểm chứng.
+Benchmark agent không thay thế đánh giá chất lượng training qua nhiều seed.
+`/health` và metadata từng lời gọi ghi revision, dtype, device, latency và peak VRAM/RSS;
+`gpu_hours` của training hiện tại chỉ tính worker, không bao gồm GPU giữ model hoặc thời gian inference.
+
+vLLM có thể dùng qua cùng `LLM_BASE_URL` trên Linux/WSL2; lần triển khai này dùng Transformers Windows.
+Chưa xác nhận vLLM trên máy hiện tại vì ổ C: đầy làm WSL báo lỗi đọc/ghi lúc cài đặt.
 
 ## Luồng và tính công bằng
 
@@ -105,7 +176,8 @@ trong artifacts như một lượt thất bại, không dùng để chứng minh
 Cost trong bản demo là **cận trên allocated-resource time bằng worker wall time**, gồm startup,
 load dữ liệu và teardown; không phải NVML active GPU compute time. CPU run chỉ báo CPU/resource
 seconds, không đổi thành GPU-hours. Watchdog/OS shutdown có thể làm vượt cap nhỏ, được báo `overrun`.
-Thời gian LLM ở parent không giữ CUDA allocation vì worker đã đóng; token/latency báo riêng.
+Với API cloud, parent không giữ CUDA allocation cho LLM. Với self-host GPU, server LLM giữ allocation
+riêng dù training worker đã đóng; phải đo tài nguyên server và tổng wall time riêng.
 
 ## Artifacts và giới hạn
 

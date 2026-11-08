@@ -19,12 +19,14 @@ class ResponsePayload(Record):
     reason: str
 
 
-class OpenRouterGateway:
+class OpenAICompatibleGateway:
     def __init__(self, key, model="xingchen-agi/xing4.0-29b-a4b:free",
-                 base_url="https://openrouter.ai/api/v1", timeout=30, retry_delay=1, deadline=65):
+                 base_url="https://openrouter.ai/api/v1", timeout=30, retry_delay=1, deadline=65,
+                 mode="openrouter", attempts=2, max_tokens=2048):
         self.key, self.model = key, model
         self.base_url = base_url.rstrip("/")
         self.timeout, self.retry_delay, self.deadline = timeout, retry_delay, deadline
+        self.mode, self.attempts, self.max_tokens = mode, attempts, max_tokens
 
     def complete(self, evidence):
         payload, metadata = self.structured(
@@ -35,11 +37,11 @@ class OpenRouterGateway:
             "and grad_clip_norm use set. Use observed settings and metrics only, and consider "
             "uncertainty: a proposed cause must be verified against control. No commands. "
             "ABSTAIN if evidence insufficient. Confidence is an estimate, not calibrated.")
-        return DiagnosisReport(mode="openrouter", **payload.model_dump()), metadata
+        return DiagnosisReport(mode=self.mode, **payload.model_dump()), metadata
 
     def structured(self, role, payload, response_type, instruction):
         started = time.monotonic()
-        metadata = {"agent": role, "mode": "openrouter", "model": self.model,
+        metadata = {"agent": role, "mode": self.mode, "model": self.model,
                     "attempts": 0, "usage": {}, "latency_seconds": 0}
         async def bounded():
             try:
@@ -48,7 +50,7 @@ class OpenRouterGateway:
             except asyncio.TimeoutError:
                 raise GatewayError("Gateway absolute deadline exceeded") from None
         try:
-            if not self.key:
+            if not self.key and self.mode == "openrouter":
                 raise GatewayError("OPENROUTER_API_KEY is not set")
             result = asyncio.run(bounded())
         except GatewayError as error:
@@ -62,7 +64,22 @@ class OpenRouterGateway:
         schema = response_type.model_json_schema()
         schema_name = {"analysis": "training_diagnosis", "planner": "training_plan",
                        "evaluation": "training_evaluation"}[role]
-        body = {"model": self.model, "temperature": 0, "max_tokens": 2048,
+        if self.mode == "local":
+            # Declare compact output limits in the request schema so the small
+            # local model cannot spend its entire deadline on a verbose reason.
+            schema["properties"]["reason"]["maxLength"] = 160
+            if role == "analysis":
+                schema["properties"]["hypotheses"]["maxItems"] = 1
+                hypothesis = schema["$defs"]["Hypothesis"]["properties"]
+                hypothesis["cause"]["maxLength"] = 160
+                hypothesis["hypothesis_id"]["maxLength"] = 48
+                hypothesis["evidence_epochs"]["maxItems"] = 8
+                hypothesis["interventions"]["maxItems"] = 1
+            instruction += (" Be concise: reason and cause each use at most 15 words. "
+                            "For analysis return at most one hypothesis and one intervention copied exactly "
+                            "from allowed_interventions, including its parameter, operation and value. "
+                            "Do not describe interventions as already executed.")
+        body = {"model": self.model, "temperature": 0, "max_tokens": self.max_tokens,
                 "messages": [
                     {"role": "system", "content": instruction + " Return only JSON conforming to this schema, "
                      "without markdown or extra fields: " + json.dumps(schema)},
@@ -71,17 +88,17 @@ class OpenRouterGateway:
                     "name": schema_name, "strict": False, "schema": schema}}}
         started = time.monotonic()
         async with httpx.AsyncClient(trust_env=False) as client:
-            for attempt in range(2):
+            for attempt in range(self.attempts):
                 metadata["attempts"] = attempt + 1
                 remaining = self.deadline - (time.monotonic() - started)
                 if remaining <= 0:
                     raise GatewayError("Gateway deadline exceeded")
                 try:
                     response = await client.post(self.base_url + "/chat/completions", json=body,
-                                           headers={"Authorization": "Bearer " + self.key},
+                                           headers={"Authorization": "Bearer " + self.key} if self.key else {},
                                            timeout=min(self.timeout, remaining))
                 except httpx.TransportError:
-                    if attempt == 1:
+                    if attempt + 1 == self.attempts:
                         raise GatewayError("Upstream transport failure") from None
                     delay = self.retry_delay
                 else:
@@ -92,7 +109,18 @@ class OpenRouterGateway:
                                 raise ValueError("Response must be an object")
                             metadata.update(model=data.get("model", self.model), request_id=data.get("id"),
                                             usage=data.get("usage", {}))
-                            result = response_type.model_validate_json(data["choices"][0]["message"]["content"])
+                            if isinstance(data.get("local_metadata"), dict):
+                                metadata["server"] = {name: data["local_metadata"][name] for name in
+                                    ("revision", "dtype", "device", "engine", "context_tokens", "load_seconds",
+                                     "torch_version", "generation_seconds", "rss_mb", "peak_vram_mb")
+                                    if name in data["local_metadata"]}
+                            choice = data["choices"][0]
+                            content = choice["message"]["content"]
+                            metadata["raw_output"] = content.replace(self.key, "[REDACTED]") if self.key else content
+                            metadata["finish_reason"] = choice.get("finish_reason")
+                            if choice.get("finish_reason") not in (None, "stop"):
+                                raise ValueError("Incomplete or refused model output")
+                            result = response_type.model_validate_json(content)
                         except (ValueError, KeyError, IndexError, TypeError, ValidationError):
                             raise GatewayError("Invalid upstream response schema") from None
                         return result
@@ -106,7 +134,8 @@ class OpenRouterGateway:
                     except ValueError:
                         pass
                     def sanitized(value):
-                        return str(value).replace(self.key, "[REDACTED]")[:500]
+                        value = str(value)
+                        return (value.replace(self.key, "[REDACTED]") if self.key else value)[:500]
                     metadata.setdefault("upstream_errors", []).append({
                         "attempt": attempt + 1, "status": response.status_code,
                         "code": sanitized(detail.get("code", "")),
@@ -114,7 +143,7 @@ class OpenRouterGateway:
                         "retry_after": sanitized(response.headers.get("Retry-After", ""))})
                     if response.status_code != 429 and response.status_code < 500:
                         raise GatewayError(f"Upstream HTTP {response.status_code}")
-                    if attempt == 1:
+                    if attempt + 1 == self.attempts:
                         raise GatewayError(f"Upstream HTTP {response.status_code}; retry limit reached")
                     try:
                         delay = max(self.retry_delay, float(response.headers.get("Retry-After", 0)))
@@ -127,5 +156,9 @@ class OpenRouterGateway:
 
 
 def failure_metadata(error, agent, spec, metadata=None):
-    return {"agent": agent, "mode": "openrouter", "model": spec.model_id,
+    return {"agent": agent, "mode": spec.analysis_mode, "model": spec.model_id,
             **(metadata or {}), **error.metadata, "error": str(error)}
+
+
+# Retain the public constructor used by existing scripts and saved tests.
+OpenRouterGateway = OpenAICompatibleGateway

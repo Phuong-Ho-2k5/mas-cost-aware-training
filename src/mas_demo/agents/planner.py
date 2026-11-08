@@ -1,6 +1,7 @@
 import os
 from mas_demo.contracts import TrialSpec, PlanResponse
 from mas_demo.llm.gateway import OpenRouterGateway, GatewayError, failure_metadata
+from mas_demo.llm.settings import create_gateway
 from mas_demo.memory.store import normalize_action
 
 
@@ -27,7 +28,7 @@ def plan_with_agent(spec, diagnosis, history, round_id, horizon, gateway=None, c
         if any(a not in spec.intervention_allowlist for a in actions):
             raise GatewayError("Diagnosis contains a forbidden intervention")
         candidates = eligible_trials(actions, history, round_id, horizon, current_settings=current_settings)
-        gateway = gateway or OpenRouterGateway(os.environ.get("OPENROUTER_API_KEY", ""), spec.model_id)
+        gateway = gateway or create_gateway(spec)
         response, metadata = gateway.structured("planner", {
             "schema_version": 2, "diagnosis": diagnosis.model_dump(), "history": history, "round_id": round_id,
             "current_settings": current_settings,

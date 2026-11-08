@@ -57,10 +57,17 @@ class TaskSpec(Record):
     worker_overhead_seconds: float = Field(10, ge=0)
     safety_margin: float = Field(0.3, ge=0)
     unit_guard_seconds: float = Field(0.2, gt=0)
-    analysis_mode: Literal["openrouter"] = "openrouter"
+    analysis_mode: Literal["openrouter", "local"] = "openrouter"
     model_id: str = "xingchen-agi/xing4.0-29b-a4b:free"
     fault_epoch: int | None = Field(None, gt=0)
     fault_lr: float = Field(1.0, gt=0, le=10)
+
+    @model_validator(mode="before")
+    @classmethod
+    def default_local_model(cls, value):
+        if isinstance(value, dict) and value.get("analysis_mode") == "local" and "model_id" not in value:
+            return {**value, "model_id": "Qwen/Qwen2.5-0.5B-Instruct"}
+        return value
 
     @model_validator(mode="after")
     def validate_policy(self):
@@ -142,7 +149,7 @@ class Hypothesis(Record):
 
 class DiagnosisReport(Record):
     status: Literal["DIAGNOSED", "ABSTAIN"]
-    mode: Literal["openrouter"]
+    mode: Literal["openrouter", "local"]
     hypotheses: list[Hypothesis] = Field(default_factory=list)
     reason: str = ""
 

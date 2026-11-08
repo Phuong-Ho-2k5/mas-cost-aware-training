@@ -1,6 +1,7 @@
 import os
 from mas_demo.contracts import EvalVerdict, EvaluationResponse
 from mas_demo.llm.gateway import OpenRouterGateway, GatewayError, failure_metadata
+from mas_demo.llm.settings import create_gateway
 
 
 def evaluate_with_agent(spec, control, trials, comparison_epoch, gateway=None):
@@ -14,7 +15,7 @@ def evaluate_with_agent(spec, control, trials, comparison_epoch, gateway=None):
                 and e.val_accuracy - base.val_accuracy >= spec.min_gain and e.val_loss <= base.val_loss}
     metadata = {}
     try:
-        gateway = gateway or OpenRouterGateway(os.environ.get("OPENROUTER_API_KEY", ""), spec.model_id)
+        gateway = gateway or create_gateway(spec)
         response, metadata = gateway.structured("evaluation", {
             "schema_version": 2, "comparison_epoch": comparison_epoch, "min_gain": spec.min_gain,
             "control": base.model_dump() if base else None,

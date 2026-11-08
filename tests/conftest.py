@@ -11,6 +11,12 @@ def provider():
     state = {"requests": [], "responses": {}, "statuses": {}}
 
     class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(state.get("health_status", 200))
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"data": [{"id": model} for model in state.get("served_models", [])]}).encode())
+
         def do_POST(self):
             request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             role = request["response_format"]["json_schema"]["name"]
@@ -31,7 +37,8 @@ def provider():
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(json.dumps({"id": "local-request", "model": "local-model",
-                "choices": [{"message": {"content": json.dumps(content)}}],
+                "choices": [{"finish_reason": state.get("finish_reason", "stop"),
+                             "message": {"content": json.dumps(content)}}],
                 "usage": {"total_tokens": 12}}).encode())
 
         def log_message(self, *args):

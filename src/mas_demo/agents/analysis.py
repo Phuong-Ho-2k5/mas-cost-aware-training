@@ -2,10 +2,11 @@ import os
 import json
 from mas_demo.contracts import DiagnosisReport
 from mas_demo.llm.gateway import OpenRouterGateway, GatewayError, failure_metadata
+from mas_demo.llm.settings import create_gateway
 
 
 def diagnose(spec, evidence, history, gateway=None):
-    gateway = gateway or OpenRouterGateway(os.environ.get("OPENROUTER_API_KEY", ""), spec.model_id)
+    gateway = gateway or create_gateway(spec)
     metadata = {}
     try:
         report, metadata = gateway.complete({"schema_version": 2, "evidence": evidence.model_dump(), "history": history,
@@ -34,4 +35,4 @@ def diagnose(spec, evidence, history, gateway=None):
             reject("missing_hypothesis", "No supported hypothesis")
         return report, metadata
     except GatewayError as error:
-        return DiagnosisReport(status="ABSTAIN", mode="openrouter", reason=str(error)), failure_metadata(error, "analysis", spec, metadata)
+        return DiagnosisReport(status="ABSTAIN", mode=spec.analysis_mode, reason=str(error)), failure_metadata(error, "analysis", spec, metadata)
