@@ -1,0 +1,21 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+artifacts/
+data/
+tmp/
+.env
+.env.*
+!.env.example
+.superpowers/
+*.log
+
+# Documents excluded from GitHub uploads
+*.[dD][oO][cC][xX]
+*.[pP][dD][fF]
+
+# Local-only project documentation and Postman resources
+/docs/
+/postman/
