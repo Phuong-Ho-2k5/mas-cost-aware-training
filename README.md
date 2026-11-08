@@ -114,7 +114,10 @@ tmp/llm-server-venv/Scripts/python scripts/check_local_agents.py
 ```
 
 Hai config mới dùng **CPU training** để tránh tranh VRAM 4 GB với model. Smoke dùng synthetic data;
-config CIFAR chạy subset thật. Đổi output directory ở mỗi lần chạy. `Ctrl+C` ở terminal server để dừng.
+config CIFAR chạy subset thật với LR ban đầu `0.1`. Pilot trước đó dùng LR `1.0` gây numerical error
+ở hai trong ba seed; kết quả thất bại vẫn được giữ trong artifacts, không dùng để khẳng định hiệu quả agent.
+Đổi output directory ở mỗi lần chạy. `Ctrl+C` ở terminal server để dừng;
+nếu server được chạy nền, dùng `powershell -ExecutionPolicy Bypass -File scripts/stop_local_llm.ps1`.
 Đừng chạy benchmark và training cùng lúc nếu muốn đo latency inference riêng biệt.
 
 `.env.example` có `LLM_BASE_URL`, `LLM_API_KEY` tùy chọn và timeout; config YAML chọn

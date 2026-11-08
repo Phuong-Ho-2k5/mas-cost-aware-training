@@ -83,6 +83,7 @@ def test_invalid_or_truncated_output_is_not_returned_as_success(content, finish)
         response = client.post("/v1/chat/completions", json=request_body())
         assert response.status_code == 502
         assert response.json()["error"]["code"] == "invalid_model_output"
+        assert response.json()["error"]["raw_output"] == content
 
 
 def test_numeric_and_reference_constraints_are_validated_after_generation():
@@ -162,3 +163,35 @@ def test_generation_failures_are_structured_and_release_admission(failure, statu
         assert response.status_code == status
         assert response.json()["error"]["code"] == code
         assert client.get("/health").json()["pending"] == 0
+
+
+def test_real_http_rejected_generation_is_not_scored_as_transport_failure():
+    import socket
+    import uvicorn
+    from mas_demo.contracts import TaskSpec
+    from mas_demo.llm.gateway import OpenAICompatibleGateway
+    from mas_demo.llm.benchmark import run_case
+    engine = Engine()
+    engine.output, engine.finish_reason = '{"status":', "length"
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    port = listener.getsockname()[1]
+    server = uvicorn.Server(uvicorn.Config(app_for(engine), log_level="error", access_log=False))
+    thread = threading.Thread(target=server.run, kwargs={"sockets": [listener]}, daemon=True)
+    thread.start()
+    try:
+        deadline = time.monotonic() + 5
+        while not server.started and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert server.started
+        gateway = OpenAICompatibleGateway("", model="test-qwen", mode="local", attempts=1,
+            base_url=f"http://127.0.0.1:{port}/v1")
+        result = run_case({"id": "rejected", "role": "analysis", "scenario": "insufficient", "expected": "ABSTAIN"}, TaskSpec(analysis_mode="local"), gateway)
+        assert result["raw_output"] == '{"status":'
+        assert result["transport_ok"] is True and result["api_success"] is False
+        assert result["schema_valid"] is False and result["correct"] is False
+        assert result["usage"]["total_tokens"] == 10
+    finally:
+        server.should_exit = True
+        thread.join(timeout=5)
+        listener.close()

@@ -3,6 +3,7 @@ import json
 import time
 import httpx
 from pydantic import ValidationError
+from jsonschema import Draft202012Validator, ValidationError as JSONSchemaValidationError
 from typing import Literal
 from mas_demo.contracts import DiagnosisReport, Hypothesis, Record
 
@@ -17,6 +18,21 @@ class ResponsePayload(Record):
     status: Literal["DIAGNOSED", "ABSTAIN"]
     hypotheses: list[Hypothesis]
     reason: str
+
+
+def response_schema(role, response_type, mode="openrouter"):
+    """The exact schema sent to a provider, also used by benchmark scoring."""
+    schema = response_type.model_json_schema()
+    if mode == "local":
+        schema["properties"]["reason"]["maxLength"] = 160
+        if role == "analysis":
+            schema["properties"]["hypotheses"]["maxItems"] = 1
+            hypothesis = schema["$defs"]["Hypothesis"]["properties"]
+            hypothesis["cause"]["maxLength"] = 160
+            hypothesis["hypothesis_id"]["maxLength"] = 48
+            hypothesis["evidence_epochs"]["maxItems"] = 8
+            hypothesis["interventions"]["maxItems"] = 1
+    return schema
 
 
 class OpenAICompatibleGateway:
@@ -61,20 +77,10 @@ class OpenAICompatibleGateway:
         return result, metadata
 
     async def _complete(self, role, payload, response_type, instruction, metadata):
-        schema = response_type.model_json_schema()
+        schema = response_schema(role, response_type, self.mode)
         schema_name = {"analysis": "training_diagnosis", "planner": "training_plan",
                        "evaluation": "training_evaluation"}[role]
         if self.mode == "local":
-            # Declare compact output limits in the request schema so the small
-            # local model cannot spend its entire deadline on a verbose reason.
-            schema["properties"]["reason"]["maxLength"] = 160
-            if role == "analysis":
-                schema["properties"]["hypotheses"]["maxItems"] = 1
-                hypothesis = schema["$defs"]["Hypothesis"]["properties"]
-                hypothesis["cause"]["maxLength"] = 160
-                hypothesis["hypothesis_id"]["maxLength"] = 48
-                hypothesis["evidence_epochs"]["maxItems"] = 8
-                hypothesis["interventions"]["maxItems"] = 1
             instruction += (" Be concise: reason and cause each use at most 15 words. "
                             "For analysis return at most one hypothesis and one intervention copied exactly "
                             "from allowed_interventions, including its parameter, operation and value. "
@@ -120,8 +126,9 @@ class OpenAICompatibleGateway:
                             metadata["finish_reason"] = choice.get("finish_reason")
                             if choice.get("finish_reason") not in (None, "stop"):
                                 raise ValueError("Incomplete or refused model output")
+                            Draft202012Validator(schema).validate(json.loads(content))
                             result = response_type.model_validate_json(content)
-                        except (ValueError, KeyError, IndexError, TypeError, ValidationError):
+                        except (ValueError, KeyError, IndexError, TypeError, ValidationError, JSONSchemaValidationError):
                             raise GatewayError("Invalid upstream response schema") from None
                         return result
                     # Keep the provider's explanation for future quota/rate-limit diagnosis.
@@ -136,12 +143,18 @@ class OpenAICompatibleGateway:
                     def sanitized(value):
                         value = str(value)
                         return (value.replace(self.key, "[REDACTED]") if self.key else value)[:500]
+                    if isinstance(detail.get("raw_output"), str):
+                        raw = detail["raw_output"]
+                        metadata["raw_output"] = (raw.replace(self.key, "[REDACTED]") if self.key else raw)[:20000]
+                        metadata["finish_reason"] = detail.get("finish_reason")
+                    if isinstance(detail.get("usage"), dict):
+                        metadata["usage"] = detail["usage"]
                     metadata.setdefault("upstream_errors", []).append({
                         "attempt": attempt + 1, "status": response.status_code,
                         "code": sanitized(detail.get("code", "")),
                         "message": sanitized(detail.get("message", "")),
                         "retry_after": sanitized(response.headers.get("Retry-After", ""))})
-                    if response.status_code != 429 and response.status_code < 500:
+                    if detail.get("code") == "invalid_model_output" or (response.status_code != 429 and response.status_code < 500):
                         raise GatewayError(f"Upstream HTTP {response.status_code}")
                     if attempt + 1 == self.attempts:
                         raise GatewayError(f"Upstream HTTP {response.status_code}; retry limit reached")

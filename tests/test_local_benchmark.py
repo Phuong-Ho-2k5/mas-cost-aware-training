@@ -36,11 +36,15 @@ def test_report_does_not_hide_role_failures_or_transport_errors():
     from mas_demo.llm.benchmark import summarize
     rows = [dict(role="analysis", correct=True, schema_valid=True, semantic_valid=True, latency_seconds=1, transport_ok=True),
             dict(role="evaluation", correct=False, schema_valid=False, semantic_valid=False, latency_seconds=3, transport_ok=False)]
+    rows[0]["server"] = {"peak_vram_mb": 1024, "rss_mb": 1500, "revision": "model-sha", "dtype": "float16"}
     report = summarize(rows)
     assert report["count"] == 2 and report["schema_valid_rate"] == 0.5
     assert report["roles"]["evaluation"]["correct_rate"] == 0
     assert report["roles"]["planner"]["count"] == 0
     assert report["demo_thresholds_met"] is False
+    assert report["resources"]["peak_vram_mb"] == 1024
+    assert report["resources"]["peak_rss_mb"] == 1500
+    assert report["server_revisions"] == ["model-sha"]
 
 
 def test_json_schema_success_does_not_hide_cross_field_validation_failure(provider):
@@ -60,3 +64,14 @@ def test_three_successful_probes_cannot_pass_full_benchmark_gate():
     rows = [dict(role=role, case_id=role, correct=True, schema_valid=True, semantic_valid=True,
                  latency_seconds=1, transport_ok=True) for role in ("analysis", "planner", "evaluation")]
     assert summarize(rows)["demo_thresholds_met"] is False
+
+
+def test_effective_local_schema_is_checked_when_provider_ignores_limits(provider):
+    from mas_demo.llm.benchmark import run_case
+    from mas_demo.llm.gateway import OpenAICompatibleGateway
+    upstream, state = provider
+    state["responses"]["training_diagnosis"] = {"status": "ABSTAIN", "hypotheses": [], "reason": "x" * 161}
+    gateway = OpenAICompatibleGateway("", mode="local", attempts=1, base_url=upstream.base_url)
+    record = run_case({"id": "long-reason", "role": "analysis", "scenario": "insufficient", "expected": "ABSTAIN"}, TaskSpec(analysis_mode="local"), gateway)
+    assert record["schema_valid"] is False
+    assert record["semantic_valid"] is False and record["correct"] is False

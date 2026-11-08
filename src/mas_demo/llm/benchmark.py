@@ -13,7 +13,7 @@ from mas_demo.agents.analysis import diagnose
 from mas_demo.agents.planner import plan_with_agent
 from mas_demo.agents.evaluation import evaluate_with_agent
 from mas_demo.contracts import DiagnosisReport, EvidenceWindow, EpochEvent, Hypothesis, Intervention, PlanResponse, EvaluationResponse
-from mas_demo.llm.gateway import ResponsePayload
+from mas_demo.llm.gateway import ResponsePayload, response_schema
 
 
 def load_cases(path=None):
@@ -102,14 +102,15 @@ def run_case(case, spec, gateway):
     schema_valid = False
     if raw is not None and meta.get("finish_reason") in (None, "stop"):
         try:
-            Draft202012Validator(schema.model_json_schema()).validate(json.loads(raw))
+            Draft202012Validator(response_schema(role, schema, meta.get("mode", spec.analysis_mode))).validate(json.loads(raw))
             schema_valid = True
         except (ValueError, ValidationError):
             pass
     semantic_valid = schema_valid and "error" not in meta
     return {"case_id": case["id"], "role": role, "scenario": scenario, "expected": case["expected"],
             "actual": actual, "schema_valid": schema_valid, "semantic_valid": semantic_valid,
-            "transport_ok": bool(meta.get("request_id")),
+            "transport_ok": bool(meta.get("request_id") or meta.get("upstream_errors")),
+            "api_success": bool(meta.get("request_id")),
             "correct": semantic_valid and actual == case["expected"], **meta}
 
 
@@ -123,6 +124,11 @@ def summarize(records):
     result["latency_seconds"] = {"p50": float(np.percentile(values, 50)) if values else None,
                                  "p95": float(np.percentile(values, 95)) if values else None,
                                  "total": sum(values)}
+    measurements = [r.get("server", {}) for r in records]
+    result["resources"] = {"peak_vram_mb": max((m["peak_vram_mb"] for m in measurements if m.get("peak_vram_mb") is not None), default=None),
+                           "peak_rss_mb": max((m["rss_mb"] for m in measurements if m.get("rss_mb") is not None), default=None)}
+    result["server_revisions"] = sorted({m["revision"] for m in measurements if m.get("revision")})
+    result["server_dtypes"] = sorted({m["dtype"] for m in measurements if m.get("dtype")})
     result["demo_thresholds_met"] = bool(records) and result["schema_valid_rate"] >= 0.95 and all(
         row["count"] >= 30 and row["correct_rate"] >= 0.8 and
         len({r.get("case_id") for r in records if r["role"] == role}) >= 10

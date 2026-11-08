@@ -5,6 +5,8 @@ Run through scripts/start_local_llm.ps1; one Uvicorn worker only.
 import asyncio
 from contextlib import asynccontextmanager
 import json
+import os
+from pathlib import Path
 import threading
 import time
 from typing import Literal
@@ -111,7 +113,8 @@ def create_app(engine_factory=TransformersEngine.from_environment):
 
     @app.get("/health")
     async def health():
-        return {"ready": True, "pending": app.state.pending, **app.state.engine.info}
+        return {"ready": True, "pending": app.state.pending, "pid": os.getpid(),
+                "service_root": str(Path(__file__).resolve().parents[2]), **app.state.engine.info}
 
     @app.get("/v1/models")
     async def models():
@@ -169,7 +172,10 @@ def create_app(engine_factory=TransformersEngine.from_environment):
             value = json.loads(result["content"], parse_constant=lambda value: (_ for _ in ()).throw(ValueError("Non-finite output")))
             Draft202012Validator(body.response_format.json_schema.schema_).validate(value)
         except (ValueError, ValidationError):
-            raise HTTPException(502, {"code": "invalid_model_output", "message": "Model output was incomplete or failed full JSON Schema validation"}) from None
+            raise HTTPException(502, {"code": "invalid_model_output",
+                "message": "Model output was incomplete or failed full JSON Schema validation",
+                "raw_output": result["content"], "finish_reason": result["finish_reason"],
+                "usage": result["usage"], "local_metadata": {**app.state.engine.info, **result.get("resources", {})}}) from None
         return {"id": "local-" + uuid.uuid4().hex, "object": "chat.completion", "created": int(time.time()),
             "model": app.state.engine.model_id, "choices": [{"index": 0, "finish_reason": "stop",
                 "message": {"role": "assistant", "content": result["content"]}}],
