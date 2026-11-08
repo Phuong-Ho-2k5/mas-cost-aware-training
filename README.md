@@ -154,6 +154,13 @@ Benchmark agent không thay thế đánh giá chất lượng training qua nhi�
 `/health` và metadata từng lời gọi ghi revision, dtype, device, latency và peak VRAM/RSS;
 `gpu_hours` của training hiện tại chỉ tính worker, không bao gồm GPU giữ model hoặc thời gian inference.
 
+Kết quả đo ngày 2026-11-08 trên Quadro T2000 4 GB, FP16, revision nêu trên:
+90 lời gọi (30 tình huống x 3 lượt) có 100% JSON Schema hợp lệ; đúng kỳ vọng demo:
+Analysis **30%**, Planner **100%**, Evaluation **30%**. Model **chưa đạt** ngưỡng 80% cho từng vai trò.
+Latency p50 khoảng **10.93s**, p95 **30.82s**; peak CUDA allocated memory khoảng **1134 MiB**.
+Đây là phép đo trên máy đang làm việc, không phải benchmark phần cứng cô lập hoặc bằng chứng cải thiện training.
+Output gốc và report nằm trong `artifacts/local-qwen-benchmark-final/` ở máy đã thực hiện kiểm chứng.
+
 vLLM có thể dùng qua cùng `LLM_BASE_URL` trên Linux/WSL2; lần triển khai này dùng Transformers Windows.
 Chưa xác nhận vLLM trên máy hiện tại vì ổ C: đầy làm WSL báo lỗi đọc/ghi lúc cài đặt.
 
