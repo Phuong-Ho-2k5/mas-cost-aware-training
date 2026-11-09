@@ -1,0 +1,182 @@
+[
+  {
+    "id": "a-missing",
+    "role": "analysis",
+    "scenario": "insufficient",
+    "expected": "ABSTAIN"
+  },
+  {
+    "id": "a-single",
+    "role": "analysis",
+    "scenario": "single_epoch",
+    "expected": "ABSTAIN"
+  },
+  {
+    "id": "a-unstable",
+    "role": "analysis",
+    "scenario": "unstable",
+    "expected": "DIAGNOSED"
+  },
+  {
+    "id": "a-rising-loss",
+    "role": "analysis",
+    "scenario": "rising_loss",
+    "expected": "DIAGNOSED"
+  },
+  {
+    "id": "a-plateau",
+    "role": "analysis",
+    "scenario": "plateau",
+    "expected": "DIAGNOSED"
+  },
+  {
+    "id": "a-high-momentum",
+    "role": "analysis",
+    "scenario": "high_momentum",
+    "expected": "DIAGNOSED"
+  },
+  {
+    "id": "a-high-decay",
+    "role": "analysis",
+    "scenario": "high_decay",
+    "expected": "DIAGNOSED"
+  },
+  {
+    "id": "a-clipping",
+    "role": "analysis",
+    "scenario": "over_clipping",
+    "expected": "DIAGNOSED"
+  },
+  {
+    "id": "a-healthy",
+    "role": "analysis",
+    "scenario": "healthy",
+    "expected": "ABSTAIN"
+  },
+  {
+    "id": "a-mixed",
+    "role": "analysis",
+    "scenario": "mixed",
+    "expected": "DIAGNOSED"
+  },
+  {
+    "id": "p-one",
+    "role": "planner",
+    "scenario": "one",
+    "expected": "VALID"
+  },
+  {
+    "id": "p-two",
+    "role": "planner",
+    "scenario": "two",
+    "expected": "VALID"
+  },
+  {
+    "id": "p-empty",
+    "role": "planner",
+    "scenario": "empty",
+    "expected": "EMPTY"
+  },
+  {
+    "id": "p-cooldown",
+    "role": "planner",
+    "scenario": "cooldown",
+    "expected": "VALID"
+  },
+  {
+    "id": "p-limit",
+    "role": "planner",
+    "scenario": "max_one",
+    "expected": "VALID"
+  },
+  {
+    "id": "p-momentum",
+    "role": "planner",
+    "scenario": "momentum",
+    "expected": "VALID"
+  },
+  {
+    "id": "p-decay",
+    "role": "planner",
+    "scenario": "decay",
+    "expected": "VALID"
+  },
+  {
+    "id": "p-clipping",
+    "role": "planner",
+    "scenario": "clipping",
+    "expected": "VALID"
+  },
+  {
+    "id": "p-noop",
+    "role": "planner",
+    "scenario": "noop",
+    "expected": "EMPTY"
+  },
+  {
+    "id": "p-history",
+    "role": "planner",
+    "scenario": "history",
+    "expected": "VALID"
+  },
+  {
+    "id": "e-gain",
+    "role": "evaluation",
+    "scenario": "gain",
+    "expected": "PROMOTE"
+  },
+  {
+    "id": "e-no-gain",
+    "role": "evaluation",
+    "scenario": "no_gain",
+    "expected": "KEEP_MAIN"
+  },
+  {
+    "id": "e-worse-loss",
+    "role": "evaluation",
+    "scenario": "worse_loss",
+    "expected": "KEEP_MAIN"
+  },
+  {
+    "id": "e-below-gain",
+    "role": "evaluation",
+    "scenario": "below_gain",
+    "expected": "KEEP_MAIN"
+  },
+  {
+    "id": "e-missing-control",
+    "role": "evaluation",
+    "scenario": "missing_control",
+    "expected": "INCONCLUSIVE"
+  },
+  {
+    "id": "e-missing-trial",
+    "role": "evaluation",
+    "scenario": "missing_trial",
+    "expected": "INCONCLUSIVE"
+  },
+  {
+    "id": "e-wrong-epoch",
+    "role": "evaluation",
+    "scenario": "wrong_epoch",
+    "expected": "INCONCLUSIVE"
+  },
+  {
+    "id": "e-two",
+    "role": "evaluation",
+    "scenario": "two",
+    "expected": "PROMOTE"
+  },
+  {
+    "id": "e-later-control",
+    "role": "evaluation",
+    "scenario": "later_control",
+    "expected": "PROMOTE"
+  },
+  {
+    "id": "e-equal",
+    "role": "evaluation",
+    "scenario": "equal",
+    "expected": "KEEP_MAIN"
+  }
+]

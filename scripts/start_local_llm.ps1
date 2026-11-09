@@ -1,6 +1,6 @@
 param(
-    [ValidateSet('cpu', 'cuda')][string]$Device = 'cuda',
-    [string]$ModelCache = 'D:\HK261\model-cache',
+    [ValidateSet('cpu', 'cuda')][string]$Device,
+    [string]$ModelCache,
     [ValidateRange(1024, 65535)][int]$Port = 8000
 )
 $ErrorActionPreference = 'Stop'
@@ -8,10 +8,17 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location -LiteralPath $repoRoot
 $serverPython = Join-Path $repoRoot 'tmp\llm-server-venv\Scripts\python.exe'
 if (-not (Test-Path -LiteralPath $serverPython)) { throw 'Run scripts/setup_local_llm.ps1 first.' }
+. (Join-Path $PSScriptRoot 'load_environment.ps1')
+Import-ProjectEnvironment -Python $serverPython -EnvFile (Join-Path $repoRoot '.env')
+if (-not $ModelCache) { $ModelCache = $env:LOCAL_LLM_MODEL_CACHE }
+if (-not $ModelCache) { $ModelCache = Join-Path $repoRoot 'tmp\model-cache' }
+if (-not $Device) { $Device = $env:LOCAL_LLM_DEVICE }
+if (-not $Device) { $Device = 'cuda' }
+if ($Device -notin @('cpu', 'cuda')) { throw 'LOCAL_LLM_DEVICE must be cpu or cuda.' }
 New-Item -ItemType Directory -Force -Path (Join-Path $repoRoot 'tmp'), $ModelCache | Out-Null
 $env:TEMP = Join-Path $repoRoot 'tmp'
 $env:TMP = $env:TEMP
-$env:HF_HOME = Join-Path $ModelCache 'huggingface'
+if (-not $env:HF_HOME) { $env:HF_HOME = Join-Path $ModelCache 'huggingface' }
 $env:HF_HUB_DISABLE_XET = '1'
 $env:LOCAL_LLM_DEVICE = $Device
 $env:TOKENIZERS_PARALLELISM = 'false'

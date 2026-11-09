@@ -1,32 +1,74 @@
+"""Admission validates the complete model-selected plan without changing it."""
+
+import math
 from mas_demo.contracts import AdmissionBatch
+from mas_demo.configuration import ProposalError
 
 
-def admit_trials(trials, ledger, epoch_seconds, overhead, margin, continuation, round_id):
-    horizon = trials[0].horizon if trials else 1
-    batch = AdmissionBatch(round_id=round_id, horizon=horizon)
-    if not trials:
-        return batch
-    if any(t.horizon != horizon for t in trials):
-        raise ValueError("Trials must share a horizon")
-    cost = (epoch_seconds * horizon + overhead) * (1 + margin)
-    continuation_key = f"round-{round_id}:continuation"
+def estimate_epoch_cost(base, candidate, epoch_estimate, train_samples):
+    # Conservative relative work estimate; measurements update the base each segment.
+    old_batches = math.ceil(train_samples / base.batch_size)
+    new_batches = math.ceil(train_samples / candidate.batch_size)
+    factor = max(1.0, new_batches / max(old_batches, 1))
+    if candidate.optimizer != base.optimizer:
+        factor *= 2
+    return epoch_estimate * factor
+
+
+def admit_plan(
+    compiled_plan,
+    ledger,
+    epoch_estimate,
+    overhead,
+    margin,
+    continuation,
+    round_id,
+    current_config=None,
+    train_samples=1,
+):
+    if not compiled_plan.candidates or compiled_plan.verification_epochs is None:
+        raise ProposalError("EMPTY_PLAN", "There are no candidates to admit")
+    horizon = compiled_plan.verification_epochs
     control_key = f"round-{round_id}:control"
-    if continuation > 0 and not ledger.reserve(continuation_key, continuation):
-        batch.skipped = [t.trial_id for t in trials]
-        return batch
-    batch.continuation_key = continuation_key if continuation > 0 else None
-    if ledger.available < cost * 2 or not ledger.reserve(control_key, cost):
-        if batch.continuation_key:
-            ledger.release(batch.continuation_key)
-            batch.continuation_key = None
-        batch.skipped = [t.trial_id for t in trials]
-        return batch
-    batch.control_key = control_key
-    for trial in trials:
-        key = f"round-{round_id}:{trial.trial_id}"
-        if ledger.reserve(key, cost):
-            batch.approved.append(trial)
-            batch.reservation_keys[trial.trial_id] = key
-        else:
-            batch.skipped.append(trial.trial_id)
-    return batch
+    costs = {control_key: (epoch_estimate * horizon + overhead) * (1 + margin)}
+    keys = {}
+    for candidate in compiled_plan.candidates:
+        estimate = (
+            estimate_epoch_cost(
+                current_config, candidate.training_config, epoch_estimate, train_samples
+            )
+            if current_config
+            else epoch_estimate
+        )
+        key = f"round-{round_id}:{candidate.trial_id}"
+        keys[candidate.trial_id] = key
+        costs[key] = (estimate * horizon + overhead) * (1 + margin)
+    continuation_key = f"round-{round_id}:continuation" if continuation > 0 else None
+    if continuation_key:
+        costs[continuation_key] = continuation
+    total = sum(costs.values())
+    if total > ledger.available:
+        raise ProposalError(
+            "INSUFFICIENT_BUDGET",
+            "Entire plan cannot be reserved",
+            estimated_total_seconds=total,
+            remaining_budget_seconds=ledger.available,
+        )
+    reserved = []
+    try:
+        for key, cost in costs.items():
+            if not ledger.reserve(key, cost):
+                raise ProposalError("RESERVATION_FAILED", "Plan admission failed")
+            reserved.append(key)
+    except Exception:
+        for key in reserved:
+            ledger.release(key)
+        raise
+    return AdmissionBatch(
+        round_id=round_id,
+        horizon=horizon,
+        control_key=control_key,
+        approved=compiled_plan.candidates,
+        reservation_keys=keys,
+        continuation_key=continuation_key,
+    )

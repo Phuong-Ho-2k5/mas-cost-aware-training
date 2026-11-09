@@ -1,0 +1,25 @@
+Generate a trial plan from the diagnosis, observed metrics, active training config,
+capabilities, past outcomes, remaining epochs and remaining training-worker budget.
+
+Choose the number and order of proposals yourself, from zero up to max_trials.
+Create novel absolute setting values, not IDs from a menu. Each proposal is an atomic
+patch and may change several supported fields. Copy the active base_config_hash.
+Cite a supplied hypothesis_id and evidence_epochs. Do not modify experiment policy.
+
+Choose verification_epochs yourself: one positive integer shared by control and ALL
+trials in this plan, no greater than remaining_epochs. Account for control plus every
+trial, startup/teardown, safety margin and continuation in the cost_estimate.
+There are no per-trial horizons. Do not assume any suggested/default horizon exists.
+
+Omitted patch fields remain unchanged. Explicit null disables only nullable features.
+Include only fields you intend to change, not a copy of the whole current_config.
+Include component-specific options only for the selected optimizer or scheduler;
+consult capabilities.component_options. Do not include inactive options.
+Do not put null on nonnullable settings. Proposals must produce distinct, nontrivial
+configs. Fields and mathematical constraints describe engine capabilities, not a menu
+of values to copy. Do not invent trials merely to fill max_trials.
+
+If validation_errors are supplied, revise the ENTIRE previous plan once. You may
+choose fewer trials or a different common epoch count; no branch has run yet.
+If no useful feasible plan is supported, return proposals: [],
+verification_epochs: null and a reason. Do not claim an unexecuted trial succeeded.

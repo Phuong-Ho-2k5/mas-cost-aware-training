@@ -1,4 +1,5 @@
 """Run 30 authored scenarios x 3 rounds against the real configured local server."""
+
 import argparse
 import json
 import time
@@ -18,6 +19,7 @@ def main():
     parser.add_argument("--model", default="Qwen/Qwen2.5-0.5B-Instruct")
     parser.add_argument("--output", default="artifacts/local-qwen-benchmark")
     parser.add_argument("--cases")
+    parser.add_argument("--case-ids", nargs="+")
     args = parser.parse_args()
     if args.rounds < 1:
         parser.error("rounds must be positive")
@@ -33,14 +35,29 @@ def main():
     started = time.monotonic()
     for iteration in range(args.rounds):
         for case in load_cases(args.cases):
+            if args.case_ids and case["id"] not in args.case_ids:
+                continue
             record = {"iteration": iteration + 1, **run_case(case, spec, gateway)}
             records.append(record)
             with path.open("a", encoding="utf-8") as stream:
-                stream.write(json.dumps(record, ensure_ascii=False, allow_nan=False) + "\n")
-            print(f"{len(records)} {case['id']}: schema={record['schema_valid']} correct={record['correct']}", flush=True)
-    report = {"model": args.model, "mode": "local", "rounds": args.rounds,
-              "wall_seconds": time.monotonic() - started, **summarize(records)}
-    (directory / "report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+                stream.write(
+                    json.dumps(record, ensure_ascii=False, allow_nan=False) + "\n"
+                )
+            print(
+                f"{len(records)} {case['id']}: schema={record['schema_valid']} correct={record['correct']}",
+                flush=True,
+            )
+    report = {
+        "schema_version": 3,
+        "model": args.model,
+        "mode": "local",
+        "rounds": args.rounds,
+        "wall_seconds": time.monotonic() - started,
+        **summarize(records),
+    }
+    (directory / "report.json").write_text(
+        json.dumps(report, indent=2), encoding="utf-8"
+    )
     print(json.dumps(report, indent=2))
 
 

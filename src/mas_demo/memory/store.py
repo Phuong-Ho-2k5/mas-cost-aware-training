@@ -1,20 +1,8 @@
-import sqlite3
+"""Canonical bundle history, independent of legacy one-parameter actions."""
+
 import json
+import sqlite3
 from pathlib import Path
-from mas_demo.contracts import Intervention
-
-
-def normalize_action(value):
-    if value is None or value == 0:
-        return None
-    if isinstance(value, (float, int)):
-        return Intervention(parameter="learning_rate", operation="multiply", value=value)
-    return Intervention.model_validate(value)
-
-
-def settings_context(dataset, signals, settings):
-    normalized = {key: float(value) if value is not None else None for key, value in settings.items()}
-    return f"{dataset}:smallcnn:{','.join(sorted(signals))}:" + json.dumps(normalized, sort_keys=True)
 
 
 class MemoryStore:
@@ -22,73 +10,55 @@ class MemoryStore:
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         self.path = str(path)
         with sqlite3.connect(self.path) as db:
-            db.execute("""CREATE TABLE IF NOT EXISTS outcomes (
-                context TEXT, factor REAL, status TEXT, gain REAL, seconds REAL,
-                round_id INTEGER, PRIMARY KEY(context, factor, round_id))""")
-            db.execute("""CREATE TABLE IF NOT EXISTS action_outcomes (
-                context TEXT, action TEXT, status TEXT, gain REAL, seconds REAL,
-                round_id INTEGER, PRIMARY KEY(context, action, round_id))""")
-            for context, factor, status, gain, seconds, round_id in db.execute("SELECT * FROM outcomes").fetchall():
-                action = normalize_action(factor)
-                key = action.key if action else "null"
-                db.execute("INSERT OR IGNORE INTO action_outcomes VALUES (?,?,?,?,?,?)",
-                           (context, key, status, gain, seconds, round_id))
+            db.execute(
+                """CREATE TABLE IF NOT EXISTS config_outcomes (
+                context TEXT, base_hash TEXT, candidate_hash TEXT, round_id INTEGER,
+                record TEXT, PRIMARY KEY(context, base_hash, candidate_hash, round_id))"""
+            )
 
-    def record(self, context, factor, status, gain, seconds, round_id):
-        action = normalize_action(factor)
-        key = action.key if action else "null"
+    def record(self, context, base_hash, candidate_hash, round_id, **fields):
+        record = dict(
+            context=context,
+            base_config_hash=base_hash,
+            config_hash=candidate_hash,
+            round_id=round_id,
+            **fields
+        )
         with sqlite3.connect(self.path) as db:
-            db.execute("INSERT OR REPLACE INTO action_outcomes VALUES (?,?,?,?,?,?)",
-                       (context, key, status, gain, seconds, round_id))
+            db.execute(
+                "INSERT OR REPLACE INTO config_outcomes VALUES (?,?,?,?,?)",
+                (
+                    context,
+                    base_hash,
+                    candidate_hash,
+                    round_id,
+                    json.dumps(record, allow_nan=False),
+                ),
+            )
 
-    def migrate_legacy_contexts(self, events_path, dataset):
-        """Copy old LR history into contexts reconstructed from each round's real evidence."""
-        path = Path(events_path)
-        if not path.exists():
-            return 0
-        evidence = None
-        copied = 0
-        for line in path.read_text(encoding="utf-8").splitlines():
-            try:
-                event = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if event.get("kind") == "evidence":
-                evidence = event["evidence"]
-            elif event.get("kind") == "diagnosis" and evidence and evidence.get("recent_events"):
-                last = evidence["recent_events"][-1]
-                if last.get("learning_rate") is None:
-                    continue  # Keep history, but do not guess its training context.
-                settings = {"learning_rate": last["learning_rate"],
-                            "momentum": last.get("momentum") if last.get("momentum") is not None else 0.9,
-                            "weight_decay": last.get("weight_decay") if last.get("weight_decay") is not None else 0.0,
-                            "grad_clip_norm": last.get("grad_clip_norm")}
-                old_context = f"{dataset}:smallcnn:{','.join(sorted(evidence['signals']))}"
-                new_context = settings_context(dataset, evidence["signals"], settings)
-                number = event["round"]
-                for row in self.retrieve(old_context, number + 1):
-                    if row["round_id"] == number:
-                        self.record(new_context, row["intervention"], row["status"], row["gain"], row["seconds"], number)
-                        copied += 1
-        return copied
-
-    def retrieve(self, context, before_round):
+    def retrieve(self, context, before_round, limit=None):
         with sqlite3.connect(self.path) as db:
-            db.row_factory = sqlite3.Row
-            rows = [dict(row) for row in db.execute(
-                "SELECT * FROM action_outcomes WHERE context=? AND round_id<? ORDER BY round_id, action",
-                (context, before_round))]
-            legacy = db.execute("SELECT * FROM outcomes WHERE context=? AND round_id<?", (context, before_round)).fetchall()
-        # Legacy rows may have been written after opening the store (e.g. another old tool).
-        seen = {(r["action"], r["round_id"]) for r in rows}
-        for row in legacy:
-            action = normalize_action(row["factor"])
-            key = action.key if action else "null"
-            if (key, row["round_id"]) not in seen:
-                rows.append({"context": row["context"], "action": key, "status": row["status"],
-                             "gain": row["gain"], "seconds": row["seconds"], "round_id": row["round_id"]})
-        for row in rows:
-            row["intervention"] = json.loads(row.pop("action"))
-            item = row["intervention"]
-            row["factor"] = item["value"] if item and item["parameter"] == "learning_rate" else None
-        return sorted(rows, key=lambda r: (r["round_id"], json.dumps(r["intervention"], sort_keys=True)))
+            rows = db.execute(
+                "SELECT record FROM config_outcomes WHERE context=? AND round_id<? ORDER BY round_id DESC",
+                (context, before_round),
+            ).fetchall()
+        records = [json.loads(row[0]) for row in rows]
+        return records[:limit] if limit else records
+
+    def check_cooldown(self, context, plan, round_id, cooldown):
+        from mas_demo.configuration import ProposalError
+
+        rows = self.retrieve(context, round_id)
+        for candidate in plan.candidates:
+            if any(
+                row["base_config_hash"] == candidate.base_config_hash
+                and row["config_hash"] == candidate.config_hash
+                and row.get("status") in ("REJECT", "FAILED")
+                and round_id - row["round_id"] <= cooldown
+                for row in rows
+            ):
+                raise ProposalError(
+                    "COOLDOWN",
+                    "Candidate was recently rejected from this base",
+                    proposal_id=candidate.proposal_id,
+                )
