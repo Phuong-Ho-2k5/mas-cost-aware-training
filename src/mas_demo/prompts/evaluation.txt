@@ -1,0 +1,17 @@
+Compare the provided validation snapshots at comparison_epoch.
+
+Control and trials share verification_epochs from the same fork. Candidate configs
+and diffs describe the bundle tested; attribute an outcome to that bundle, not to
+each individual parameter. A branch missing the shared end epoch is not comparable.
+
+Return decision (PROMOTE, KEEP_MAIN, or INCONCLUSIVE), selected_branch, and reason.
+
+PROMOTE may select only an eligible_branches ID.
+
+Accuracy gain must meet min_gain and val_loss must not exceed control.
+
+Otherwise select main.
+
+If control or all trial snapshots are missing, return INCONCLUSIVE.
+
+Do not invent metrics or gain.

@@ -1,0 +1,31 @@
+# PyTorch port of AUTOTRAINER Oscillating_Loss_Case/config.pkl.
+# Original: SGD lr=0.01, momentum=0.9, batch=1, 200 epochs.
+# Keeps the original 200-epoch cap; no preset trials or horizons.
+schema_version: 3
+dataset: blobs
+device: cpu
+seed: 11
+train_samples: 700
+val_samples: 300
+observation_interval: 1
+window: 5
+analysis_mode: local
+model_id: Qwen/Qwen2.5-0.5B-Instruct
+training:
+  optimizer: sgd
+  learning_rate: 0.01
+  momentum: 0.9
+  weight_decay: 0.0
+  grad_clip_norm: null
+  batch_size: 1
+  gradient_accumulation: 1
+  scheduler: none
+policy:
+  max_epochs: 200
+  max_trials: 3
+  budget_seconds: 600
+  epoch_seconds_estimate: 2
+  worker_overhead_seconds: 10
+  safety_margin: 0.3
+  min_gain: 0.005
+  cooldown_rounds: 2

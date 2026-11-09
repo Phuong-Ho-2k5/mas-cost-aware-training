@@ -1,0 +1,21 @@
+{
+  "source_repo": "https://github.com/shiningrain/AUTOTRAINER",
+  "source_commit": "03a463ea05691a73403d7cff99a368fb4b6720cf",
+  "source_model": "AutoTrainer/demo_case/Oscillating_Loss_Case/model.h5",
+  "source_h5_sha256": "059096a7e635729fd700b0d74268bfe22589f7a8ea693f17a6ca79953ab3bf75",
+  "asset_sha256": "c91a33bcf0a00a605207adbc4442594fd13a69043bad1c2777136040a735e74d",
+  "architecture": "2 -> Dense(50, ReLU) -> Dense(3, softmax)",
+  "torch_output": "Logits; CrossEntropyLoss includes log-softmax with integer class targets.",
+  "original_config": {
+    "dataset": "simplednn_blob",
+    "optimizer": "SGD",
+    "opt_kwargs": {
+      "lr": 0.01,
+      "momentum": 0.9
+    },
+    "batchsize": 1,
+    "epoch": 200,
+    "loss": "categorical_crossentropy"
+  },
+  "port_limitations": "Preserves data recipe, initial tensors and settings; PyTorch RNG/order and optimizer transitions are not a bitwise Keras reproduction."
+}

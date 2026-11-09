@@ -92,3 +92,13 @@ def test_absolute_deadline_cancels_a_slow_dripping_body(upstream):
     with pytest.raises(GatewayError, match="deadline"):
         OpenRouterGateway("dummy", base_url=url, timeout=0.5, deadline=0.3).complete({})
     assert time.monotonic() - started < 0.8
+
+
+def test_model_rejection_preserves_raw_output_for_quality_measurement(upstream):
+    url, state = upstream
+    state["status"] = 502
+    state["error"] = {"code": "invalid_model_output", "message": "Invalid JSON", "raw_output": "dummy truncated output", "finish_reason": "length"}
+    with pytest.raises(GatewayError) as caught:
+        OpenRouterGateway("dummy", base_url=url, attempts=1).complete({})
+    assert caught.value.metadata["raw_output"] == "[REDACTED] truncated output"
+    assert caught.value.metadata["finish_reason"] == "length"

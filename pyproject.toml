@@ -11,17 +11,26 @@ dependencies = [
   "torch==2.7.1", "torchvision==0.22.1", "numpy>=1.26,<3",
   "pydantic>=2.7,<3", "PyYAML>=6,<7", "httpx>=0.27,<1",
   "streamlit>=1.37,<2", "pandas>=2.2,<3", "psutil>=5.9,<8", "filelock>=3,<5",
-  "python-dotenv>=1,<2"
+  "python-dotenv>=1,<2", "jsonschema>=4.23,<5", "scikit-learn>=1.4,<2"
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=8,<10"]
+local-llm = [
+  "transformers==4.57.6", "huggingface-hub==0.36.2", "tokenizers==0.22.2",
+  "safetensors==0.8.0", "lm-format-enforcer==0.11.3", "fastapi==0.162.2",
+  "uvicorn==0.54.0", "jsonschema==4.26.0"
+]
 
 [project.scripts]
 mas-demo = "mas_demo.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"mas_demo.prompts" = ["*.txt"]
+"mas_demo.training" = ["assets/*.npz", "assets/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

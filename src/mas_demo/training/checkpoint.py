@@ -18,6 +18,12 @@ def save_checkpoint(path, state, branch_id, dataset_version, parent=None):
     temp = path.with_suffix(".tmp")
     torch.save(state, temp)
     os.replace(temp, path)
-    return CheckpointRef(path=str(path), sha256=sha256(path), epoch=state["epoch"],
-                         branch_id=branch_id, dataset_version=dataset_version,
-                         parent_sha256=parent.sha256 if parent else None)
+    return CheckpointRef(
+        path=str(path),
+        sha256=sha256(path),
+        epoch=state["epoch"],
+        branch_id=branch_id,
+        dataset_version=dataset_version,
+        parent_sha256=parent.sha256 if parent else None,
+        config_hash=state.get("config_hash"),
+    )

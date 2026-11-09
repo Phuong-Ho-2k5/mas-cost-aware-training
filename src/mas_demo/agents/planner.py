@@ -1,45 +1,60 @@
-import os
-from mas_demo.contracts import TrialSpec, PlanResponse
-from mas_demo.llm.gateway import OpenRouterGateway, GatewayError, failure_metadata
-from mas_demo.memory.store import normalize_action
+"""The Planner generates configuration patches and their shared horizon."""
+
+from mas_demo.contracts import ConfigPlanResponse
+from mas_demo.configuration import config_hash
+from mas_demo.llm.gateway import GatewayError, failure_metadata
+from mas_demo.llm.settings import create_gateway
+from mas_demo.prompts import load_prompt
+from mas_demo.training.model import task_description
 
 
-def eligible_trials(factors, history, round_id, horizon, cooldown=2, current_settings=None):
-    """Construct valid choices only; the LLM decides which trials to run and their order."""
-    trials = []
-    actions = {a.key: a for value in factors if (a := normalize_action(value)) is not None}
-    for index, action in enumerate(actions.values()):
-        if current_settings and action.operation == "set" and current_settings.get(action.parameter) == action.value:
-            continue
-        previous = [r for r in history if normalize_action(r.get("intervention", r.get("factor"))) == action
-                    and r["status"] in ("ACCEPT", "REJECT", "FAILED")]
-        if any(r["status"] in ("REJECT", "FAILED") and round_id - r["round_id"] <= cooldown for r in previous):
-            continue
-        trials.append(TrialSpec(trial_id=f"trial-{index + 1}", intervention=action,
-                                horizon=horizon))
-    return trials
-
-
-def plan_with_agent(spec, diagnosis, history, round_id, horizon, gateway=None, current_settings=None):
-    actions = [a for h in diagnosis.hypotheses for a in h.interventions]
-    metadata = {}
+def plan_with_agent(
+    spec,
+    diagnosis,
+    evidence,
+    current_config,
+    capabilities,
+    history,
+    round_id,
+    remaining_epochs,
+    remaining_budget_seconds,
+    cost_estimate,
+    gateway=None,
+    previous_response=None,
+    validation_errors=None,
+):
+    gateway = gateway or create_gateway(spec)
+    payload = {
+        "schema_version": 3,
+        "task": task_description(spec),
+        "diagnosis": diagnosis.model_dump() if diagnosis else None,
+        "evidence": evidence.model_dump(exclude={"signals"}),
+        "current_config": current_config.model_dump(),
+        "base_config_hash": config_hash(current_config),
+        "capabilities": capabilities,
+        "history": sorted(history, key=lambda row: row.get("round_id", 0))[-4:],
+        "round_id": round_id,
+        "remaining_epochs": remaining_epochs,
+        "remaining_budget_seconds": remaining_budget_seconds,
+        "cost_estimate": cost_estimate,
+        "max_trials": spec.max_trials,
+        "comparison_protocol": "Same complete epochs from same fork for control and all trials.",
+    }
+    if validation_errors is not None:
+        payload.update(
+            previous_response=previous_response,
+            validation_errors=validation_errors,
+            repair_attempt=1,
+        )
     try:
-        if any(a not in spec.intervention_allowlist for a in actions):
-            raise GatewayError("Diagnosis contains a forbidden intervention")
-        candidates = eligible_trials(actions, history, round_id, horizon, current_settings=current_settings)
-        gateway = gateway or OpenRouterGateway(os.environ.get("OPENROUTER_API_KEY", ""), spec.model_id)
-        response, metadata = gateway.structured("planner", {
-            "schema_version": 2, "diagnosis": diagnosis.model_dump(), "history": history, "round_id": round_id,
-            "current_settings": current_settings,
-            "eligible_trials": [t.model_dump() for t in candidates], "max_trials": spec.max_trials,
-            "horizon": horizon}, PlanResponse,
-            "Choose and order eligible trial_ids using diagnosis and observed gain/cost history. "
-            "Only use IDs from eligible_trials; do not repeat IDs or invent parameter values. "
-            "The list may be empty to abstain. Return trial_ids and reason. Code enforces max_trials.")
-        eligible = {t.trial_id: t for t in candidates}
-        if len(response.trial_ids) != len(set(response.trial_ids)) or any(t not in eligible for t in response.trial_ids):
-            raise GatewayError("Planner returned duplicate or ineligible trial IDs")
-        metadata.update(reason=response.reason, output=response.model_dump())
-        return [eligible[t] for t in response.trial_ids][:spec.max_trials], metadata
+        response, metadata = gateway.structured(
+            "planner", payload, ConfigPlanResponse, load_prompt("planner")
+        )
+        metadata["output"] = response.model_dump(exclude_unset=True)
+        return response, metadata
     except GatewayError as error:
-        return [], failure_metadata(error, "planner", spec, metadata)
+        return None, failure_metadata(error, "planner", spec)
+
+
+def repair_plan_with_agent(*args, **kwargs):
+    return plan_with_agent(*args, **kwargs)

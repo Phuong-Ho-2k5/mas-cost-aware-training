@@ -1,0 +1,241 @@
+import json
+
+from mas_demo.contracts import TaskSpec
+
+
+def test_authored_analysis_and_planner_cases_have_distinct_inputs():
+    from mas_demo.llm.benchmark import load_cases, run_case
+    from mas_demo.contracts import DiagnosisReport, ConfigPlanResponse
+
+    class Capture:
+        def __init__(self):
+            self.payload = None
+
+        def complete(self, payload):
+            self.payload = payload
+            return DiagnosisReport(status="ABSTAIN", mode="local", reason="Observe"), {}
+
+        def structured(self, role, payload, *args):
+            self.payload = payload
+            return (
+                ConfigPlanResponse(
+                    proposals=[], verification_epochs=None, reason="Observe"
+                ),
+                {},
+            )
+
+    for role in ["analysis", "planner"]:
+        captures = []
+        for case in load_cases():
+            if case["role"] != role:
+                continue
+            gateway = Capture()
+            run_case(case, TaskSpec(), gateway)
+            captures.append(json.dumps(gateway.payload, sort_keys=True))
+        assert len(set(captures)) == len(captures)
+
+
+def test_benchmark_does_not_score_unaffordable_horizon_as_semantic_success(provider):
+    from mas_demo.configuration import config_hash
+    from mas_demo.llm.benchmark import run_case
+
+    gateway, state = provider
+    spec = TaskSpec()
+    state["responses"]["training_plan"] = {
+        "proposals": [
+            {
+                "proposal_id": "p1",
+                "hypothesis_id": "observed",
+                "patch": {
+                    "base_config_hash": config_hash(spec.training),
+                    "changes": {"batch_size": 1},
+                    "evidence_epochs": [3, 4],
+                    "reason": "Test",
+                },
+                "expected_effect": "Improve",
+            }
+        ],
+        "verification_epochs": 8,
+        "reason": "Compare",
+    }
+    record = run_case(
+        {"id": "budget", "role": "planner", "scenario": "two", "expected": "NONEMPTY"},
+        spec,
+        gateway,
+    )
+    assert record["schema_valid"]
+    assert not record["semantic_valid"]
+    assert "BUDGET" in record["error"]
+
+
+def test_fixture_covers_thirty_independent_cases():
+    from mas_demo.llm.benchmark import load_cases
+
+    cases = load_cases()
+    assert len(cases) == len({c["id"] for c in cases}) == 30
+    assert {
+        role: sum(c["role"] == role for c in cases)
+        for role in ("analysis", "planner", "evaluation")
+    } == {"analysis": 10, "planner": 10, "evaluation": 10}
+
+
+def test_benchmark_measures_raw_invalid_output_as_failure(provider):
+    from mas_demo.llm.benchmark import run_case
+
+    gateway, state = provider
+    state["responses"]["training_diagnosis"] = {"not_a_diagnosis": True}
+    record = run_case(
+        {
+            "id": "missing",
+            "role": "analysis",
+            "scenario": "insufficient",
+            "expected": "ABSTAIN",
+        },
+        TaskSpec(),
+        gateway,
+    )
+    assert record["schema_valid"] is False
+    assert record["correct"] is False  # Safe fallback must not score as model success.
+    assert record["raw_output"] == '{"not_a_diagnosis": true}'
+
+
+def test_benchmark_measures_valid_but_forbidden_actions(provider):
+    from mas_demo.llm.benchmark import run_case
+
+    gateway, state = provider
+    state["responses"]["training_diagnosis"] = {
+        "status": "DIAGNOSED",
+        "hypotheses": [
+            {
+                "hypothesis_id": "wrong",
+                "cause": "Loss unstable",
+                "evidence_epochs": [99],
+                "confidence": 0.5,
+            }
+        ],
+        "reason": "Try this",
+    }
+    record = run_case(
+        {
+            "id": "wrong",
+            "role": "analysis",
+            "scenario": "unstable",
+            "expected": "DIAGNOSED",
+        },
+        TaskSpec(),
+        gateway,
+    )
+    assert record["schema_valid"] is True
+    assert record["semantic_valid"] is False and record["correct"] is False
+
+
+def test_report_does_not_hide_role_failures_or_transport_errors():
+    from mas_demo.llm.benchmark import summarize
+
+    rows = [
+        dict(
+            role="analysis",
+            correct=True,
+            schema_valid=True,
+            semantic_valid=True,
+            latency_seconds=1,
+            transport_ok=True,
+        ),
+        dict(
+            role="evaluation",
+            correct=False,
+            schema_valid=False,
+            semantic_valid=False,
+            latency_seconds=3,
+            transport_ok=False,
+        ),
+    ]
+    rows[0]["server"] = {
+        "peak_vram_mb": 1024,
+        "rss_mb": 1500,
+        "revision": "model-sha",
+        "dtype": "float16",
+    }
+    report = summarize(rows)
+    assert report["count"] == 2 and report["schema_valid_rate"] == 0.5
+    assert report["roles"]["evaluation"]["correct_rate"] == 0
+    assert report["roles"]["planner"]["count"] == 0
+    assert report["demo_thresholds_met"] is False
+    assert report["resources"]["peak_vram_mb"] == 1024
+    assert report["resources"]["peak_rss_mb"] == 1500
+    assert report["server_revisions"] == ["model-sha"]
+
+
+def test_json_schema_success_does_not_hide_cross_field_validation_failure(provider):
+    from mas_demo.llm.benchmark import run_case
+
+    gateway, state = provider
+    state["responses"]["training_diagnosis"] = {
+        "status": "DIAGNOSED",
+        "hypotheses": [
+            {
+                "hypothesis_id": "wrong",
+                "cause": "Loss unstable",
+                "evidence_epochs": [99],
+                "confidence": 0.5,
+            }
+        ],
+        "reason": "Wrong operation",
+    }
+    record = run_case(
+        {
+            "id": "cross-field",
+            "role": "analysis",
+            "scenario": "unstable",
+            "expected": "DIAGNOSED",
+        },
+        TaskSpec(),
+        gateway,
+    )
+    assert record["schema_valid"] is True
+    assert record["semantic_valid"] is False and record["correct"] is False
+
+
+def test_three_successful_probes_cannot_pass_full_benchmark_gate():
+    from mas_demo.llm.benchmark import summarize
+
+    rows = [
+        dict(
+            role=role,
+            case_id=role,
+            correct=True,
+            schema_valid=True,
+            semantic_valid=True,
+            latency_seconds=1,
+            transport_ok=True,
+        )
+        for role in ("analysis", "planner", "evaluation")
+    ]
+    assert summarize(rows)["demo_thresholds_met"] is False
+
+
+def test_effective_local_schema_is_checked_when_provider_ignores_limits(provider):
+    from mas_demo.llm.benchmark import run_case
+    from mas_demo.llm.gateway import OpenAICompatibleGateway
+
+    upstream, state = provider
+    state["responses"]["training_diagnosis"] = {
+        "status": "ABSTAIN",
+        "hypotheses": [],
+        "reason": "x" * 161,
+    }
+    gateway = OpenAICompatibleGateway(
+        "", mode="local", attempts=1, base_url=upstream.base_url
+    )
+    record = run_case(
+        {
+            "id": "long-reason",
+            "role": "analysis",
+            "scenario": "insufficient",
+            "expected": "ABSTAIN",
+        },
+        TaskSpec(analysis_mode="local"),
+        gateway,
+    )
+    assert record["schema_valid"] is False
+    assert record["semantic_valid"] is False and record["correct"] is False

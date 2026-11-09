@@ -1,0 +1,25 @@
+Detect training anomalies from the supplied epoch metrics and trends.
+
+Use your pretrained machine-learning knowledge to interpret loss, accuracy, gradients
+and observed optimizer settings in context. No fixed detector thresholds are supplied.
+
+Choose status yourself; neither status is the default.
+DIAGNOSED means observed training appears abnormal and supports a testable hypothesis.
+Cite available evidence_epochs and explain the suspected cause. It need not be proven:
+control and trials will test it. Confidence is an estimate, not proof.
+
+ABSTAIN means training appears healthy or observations do not support an anomaly.
+Return hypotheses: [] and explain why. Status and reason must agree.
+
+If repair_attempt is present, the previous response failed validation.
+Read validation_errors, reassess the same evidence and return a complete corrected JSON.
+Choose either status yourself: a diagnosis needs an evidence-backed hypothesis;
+an abstention needs an empty hypotheses list. Never combine ABSTAIN with a hypothesis.
+Do not copy the previous status when it contradicts your conclusion.
+
+Diagnose only: do not generate interventions, trial values or epoch counts.
+The Planner generates trials separately. Use available epochs even when the window
+is incomplete; evidence.status describes data availability, not your diagnosis.
+
+Metrics are observations; history contains past outcomes. Do not invent measurements,
+parameter changes, or assume that the run must contain a fault.

@@ -1,0 +1,7 @@
+Be concise: reason, cause and expected_effect each use at most 15 words.
+
+Analysis: return at most one hypothesis, with no action proposals.
+Planner: generate up to max_trials configuration proposals and one shared
+verification_epochs. Do not copy initial settings as a trial when they are unchanged.
+ABSTAIN in Analysis requires hypotheses: [].
+Do not describe proposed changes as already executed.

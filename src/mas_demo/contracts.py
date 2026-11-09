@@ -1,4 +1,5 @@
-import json
+"""Protocol v3: autonomous proposals and one shared verification horizon."""
+
 from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -7,78 +8,113 @@ class Record(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
 
-class Intervention(Record):
-    parameter: Literal["learning_rate", "momentum", "weight_decay", "grad_clip_norm"]
-    operation: Literal["multiply", "set"]
-    value: float = Field(strict=True)
+class TrainingConfig(Record):
+    optimizer: Literal["sgd", "adam", "adamw"] = "sgd"
+    learning_rate: float = Field(0.01, ge=0, strict=True)
+    momentum: float = Field(0.9, ge=0, lt=1, strict=True)
+    weight_decay: float = Field(0.0, ge=0, strict=True)
+    grad_clip_norm: float | None = Field(None, gt=0, strict=True)
+    batch_size: int = Field(16, gt=0, strict=True)
+    gradient_accumulation: int = Field(1, gt=0, strict=True)
+    beta1: float = Field(0.9, ge=0, lt=1, strict=True)
+    beta2: float = Field(0.999, ge=0, lt=1, strict=True)
+    epsilon: float = Field(1e-8, gt=0, strict=True)
+    scheduler: Literal["none", "step", "cosine"] = "none"
+    scheduler_step_size: int = Field(100, gt=0, strict=True)
+    scheduler_gamma: float = Field(0.1, gt=0, strict=True)
+    scheduler_t_max: int = Field(100, gt=0, strict=True)
+    early_stop_patience: int | None = Field(None, gt=0, strict=True)
+
+
+class TrainingPatch(Record):
+    optimizer: Literal["sgd", "adam", "adamw"] = None
+    learning_rate: float = Field(None, gt=0, strict=True)
+    momentum: float = Field(None, ge=0, lt=1, strict=True)
+    weight_decay: float = Field(None, ge=0, strict=True)
+    grad_clip_norm: float | None = Field(None, gt=0, strict=True)
+    batch_size: int = Field(None, gt=0, strict=True)
+    gradient_accumulation: int = Field(None, gt=0, strict=True)
+    beta1: float = Field(None, ge=0, lt=1, strict=True)
+    beta2: float = Field(None, ge=0, lt=1, strict=True)
+    epsilon: float = Field(None, gt=0, strict=True)
+    scheduler: Literal["none", "step", "cosine"] = None
+    scheduler_step_size: int = Field(None, gt=0, strict=True)
+    scheduler_gamma: float = Field(None, gt=0, strict=True)
+    scheduler_t_max: int = Field(None, gt=0, strict=True)
+    early_stop_patience: int | None = Field(None, gt=0, strict=True)
 
     @model_validator(mode="after")
-    def validate_action(self):
-        if self.parameter == "learning_rate":
-            valid = self.operation == "multiply" and 0 < self.value < 1
-        else:
-            limits = {"momentum": 0 <= self.value < 1, "weight_decay": 0 <= self.value <= 1,
-                      "grad_clip_norm": 0 < self.value <= 100}
-            valid = self.operation == "set" and limits[self.parameter]
-        if not valid:
-            raise ValueError("Invalid parameter, operation or intervention value")
-        if self.value == 0:
-            self.value = 0.0
+    def valid_nulls(self):
+        for name in self.model_fields_set:
+            if getattr(self, name) is None and name not in (
+                "grad_clip_norm",
+                "early_stop_patience",
+            ):
+                raise ValueError(f"{name} cannot be null")
         return self
 
-    @property
-    def key(self):
-        return json.dumps(self.model_dump(), sort_keys=True, separators=(",", ":"))
 
-
-class TaskSpec(Record):
-    dataset: Literal["cifar10", "synthetic"] = "cifar10"
-    data_dir: str = "data"
-    device: Literal["auto", "cpu", "cuda"] = "auto"
-    seed: int = 11
-    train_samples: int = Field(4096, gt=0, le=45000)
-    val_samples: int = Field(1024, gt=0, le=5000)
-    batch_size: int = Field(16, gt=0)
-    learning_rate: float = Field(0.01, gt=0, le=10)
-    momentum: float = Field(0.9, ge=0, lt=1)
-    weight_decay: float = Field(0, ge=0, le=1)
-    grad_clip_norm: float | None = Field(None, gt=0, le=100)
-    max_epochs: int = Field(10, gt=0)
-    observation_interval: int = Field(2, gt=0)
-    window: int = Field(2, ge=2)
-    trial_horizon: int = Field(2, gt=0)
-    min_trial_horizon: int = Field(1, gt=0)
-    max_trials: int = Field(2, ge=0, le=8)
-    lr_factors: list[float] = Field(default_factory=lambda: [0.5, 0.1])
-    allowed_interventions: list[Intervention] | None = None
-    min_gain: float = Field(0.005, ge=0, le=1)
+class ExperimentPolicy(Record):
+    max_epochs: int = Field(10, gt=0, strict=True)
+    max_trials: int = Field(3, ge=0, le=8, strict=True)
     budget_seconds: float = Field(900, gt=0)
+    min_gain: float = Field(0.005, ge=0, le=1)
     epoch_seconds_estimate: float = Field(20, gt=0)
     worker_overhead_seconds: float = Field(10, ge=0)
     safety_margin: float = Field(0.3, ge=0)
+    cooldown_rounds: int = Field(2, ge=0, strict=True)
+
+
+class TaskSpec(Record):
+    schema_version: Literal[3] = 3
+    dataset: Literal["cifar10", "synthetic", "blobs"] = "cifar10"
+    data_dir: str = "data"
+    device: Literal["auto", "cpu", "cuda"] = "cpu"
+    seed: int = 11
+    train_samples: int = Field(4096, gt=0, le=45000)
+    val_samples: int = Field(1024, gt=0, le=5000)
+    training: TrainingConfig = Field(default_factory=TrainingConfig)
+    policy: ExperimentPolicy = Field(default_factory=ExperimentPolicy)
+    observation_interval: Literal[1] = 1
+    window: int = Field(5, ge=1, le=8)
     unit_guard_seconds: float = Field(0.2, gt=0)
-    analysis_mode: Literal["openrouter"] = "openrouter"
-    model_id: str = "xingchen-agi/xing4.0-29b-a4b:free"
-    fault_epoch: int | None = Field(None, gt=0)
-    fault_lr: float = Field(1.0, gt=0, le=10)
+    analysis_mode: Literal["openrouter", "local"] = "local"
+    model_id: str = "Qwen/Qwen2.5-0.5B-Instruct"
+
+    @model_validator(mode="before")
+    @classmethod
+    def blobs_sample_defaults(cls, values):
+        if isinstance(values, dict) and values.get("dataset") == "blobs":
+            values = dict(values)
+            values.setdefault("train_samples", 700)
+            values.setdefault("val_samples", 300)
+        return values
 
     @model_validator(mode="after")
-    def validate_policy(self):
-        if self.min_trial_horizon > self.trial_horizon:
-            raise ValueError("min_trial_horizon exceeds trial_horizon")
-        if not self.lr_factors or any(not 0 < x < 1 for x in self.lr_factors):
-            raise ValueError("LR factors must be between 0 and 1")
-        if len(set(self.lr_factors)) != len(self.lr_factors):
-            raise ValueError("duplicate LR factors")
-        if self.allowed_interventions is not None and len({a.key for a in self.allowed_interventions}) != len(self.allowed_interventions):
-            raise ValueError("duplicate interventions")
+    def validate_blobs_split(self):
+        if self.dataset == "blobs" and (
+            self.train_samples > 700 or self.val_samples > 300
+        ):
+            raise ValueError(
+                "Blobs uses the fixed AUTOTRAINER split: at most 700 train / 300 validation"
+            )
         return self
 
     @property
-    def intervention_allowlist(self):
-        if self.allowed_interventions is not None:
-            return self.allowed_interventions
-        return [Intervention(parameter="learning_rate", operation="multiply", value=f) for f in self.lr_factors]
+    def max_epochs(self):
+        return self.policy.max_epochs
+
+    @property
+    def budget_seconds(self):
+        return self.policy.budget_seconds
+
+    @property
+    def min_gain(self):
+        return self.policy.min_gain
+
+    @property
+    def max_trials(self):
+        return self.policy.max_trials
 
 
 class DatasetManifest(Record):
@@ -87,7 +123,9 @@ class DatasetManifest(Record):
     train_indices: list[int]
     val_indices: list[int]
     version: str
-    origin: Literal["real_subset", "real_full", "synthetic"]
+    origin: Literal["real_subset", "real_full", "synthetic", "generated_toy"]
+    data_recipe: str | None = None
+    generator_version: str | None = None
 
 
 class CheckpointRef(Record):
@@ -97,6 +135,7 @@ class CheckpointRef(Record):
     branch_id: str
     dataset_version: str
     parent_sha256: str | None = None
+    config_hash: str | None = None
 
 
 class EpochEvent(Record):
@@ -112,15 +151,22 @@ class EpochEvent(Record):
     grad_clip_norm: float | None = None
     seconds: float = 0
     peak_vram_mb: float | None = None
+    config_hash: str | None = None
+    samples_seen: int = 0
+    optimizer_steps: int = 0
 
 
 class SegmentResult(Record):
-    status: Literal["COMPLETE", "BUDGET_EXHAUSTED", "NUMERICAL_ERROR", "FAILED"]
+    status: Literal[
+        "COMPLETE", "EARLY_STOPPED", "BUDGET_EXHAUSTED", "NUMERICAL_ERROR", "FAILED"
+    ]
     checkpoint: CheckpointRef | None = None
     best_checkpoint: CheckpointRef | None = None
     events: list[EpochEvent] = Field(default_factory=list)
     seconds: float = 0
     error: str | None = None
+    training_config: TrainingConfig | None = None
+    transition: dict = Field(default_factory=dict)
 
 
 class EvidenceWindow(Record):
@@ -132,24 +178,65 @@ class EvidenceWindow(Record):
     quality_flags: list[str] = Field(default_factory=list)
 
 
-class Hypothesis(Record):
+class AnalysisHypothesis(Record):
     hypothesis_id: str
     cause: str
     evidence_epochs: list[int]
-    interventions: list[Intervention]
     confidence: float = Field(ge=0, le=1)
+
+
+Hypothesis = AnalysisHypothesis
 
 
 class DiagnosisReport(Record):
     status: Literal["DIAGNOSED", "ABSTAIN"]
-    mode: Literal["openrouter"]
-    hypotheses: list[Hypothesis] = Field(default_factory=list)
+    mode: Literal["openrouter", "local"]
+    hypotheses: list[AnalysisHypothesis] = Field(default_factory=list)
     reason: str = ""
 
 
-class PlanResponse(Record):
-    trial_ids: list[str]
+class ConfigPatch(Record):
+    base_config_hash: str
+    changes: TrainingPatch
     reason: str
+    evidence_epochs: list[int]
+
+
+class ConfigProposal(Record):
+    proposal_id: str
+    hypothesis_id: str
+    patch: ConfigPatch
+    expected_effect: str
+
+
+class ConfigPlanResponse(Record):
+    proposals: list[ConfigProposal]
+    verification_epochs: int | None = Field(ge=1, strict=True)
+    reason: str
+
+    @model_validator(mode="after")
+    def shared_horizon(self):
+        if bool(self.proposals) != (self.verification_epochs is not None):
+            raise ValueError(
+                "Nonempty proposals require verification_epochs; abstention requires null"
+            )
+        return self
+
+
+class CompiledProposal(Record):
+    trial_id: str
+    proposal_id: str
+    hypothesis_id: str
+    base_config_hash: str
+    training_config: TrainingConfig
+    config_hash: str
+    diff: dict
+    evidence_epochs: list[int]
+
+
+class CompiledPlan(Record):
+    candidates: list[CompiledProposal]
+    verification_epochs: int | None
 
 
 class EvaluationResponse(Record):
@@ -158,42 +245,18 @@ class EvaluationResponse(Record):
     reason: str
 
 
-class TrialSpec(Record):
-    trial_id: str
-    lr_factor: float | None = Field(None, gt=0, lt=1)
-    intervention: Intervention | None = None
-    horizon: int = Field(gt=0)
-    hypothesis_id: str = ""
-
-    @model_validator(mode="after")
-    def normalize_action(self):
-        if self.intervention is None:
-            if self.lr_factor is None:
-                raise ValueError("A trial needs an intervention")
-            self.intervention = Intervention(parameter="learning_rate", operation="multiply", value=self.lr_factor)
-        elif self.lr_factor is not None and self.intervention != Intervention(
-                parameter="learning_rate", operation="multiply", value=self.lr_factor):
-            raise ValueError("Conflicting trial intervention and legacy LR factor")
-        if self.intervention.parameter == "learning_rate":
-            self.lr_factor = self.intervention.value
-        return self
-
-
-class EvalVerdict(Record):
-    decision: Literal["PROMOTE", "KEEP_MAIN", "INCONCLUSIVE"]
+class EvalVerdict(EvaluationResponse):
     selected_branch: str = "main"
     gain: float | None = None
-    reason: str
 
 
 class AdmissionBatch(Record):
     round_id: int
     horizon: int
-    control_key: str | None = None
+    control_key: str
+    approved: list[CompiledProposal]
+    reservation_keys: dict[str, str]
     continuation_key: str | None = None
-    approved: list[TrialSpec] = Field(default_factory=list)
-    skipped: list[str] = Field(default_factory=list)
-    reservation_keys: dict[str, str] = Field(default_factory=dict)
 
 
 class VerificationRoundResult(Record):

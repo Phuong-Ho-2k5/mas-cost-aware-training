@@ -1,0 +1,29 @@
+# Initial state and experiment policy only. Planner generates all trial values and horizons.
+schema_version: 3
+dataset: cifar10
+device: cpu
+seed: 11
+train_samples: 4096
+val_samples: 1024
+observation_interval: 1
+window: 5
+analysis_mode: local
+model_id: Qwen/Qwen2.5-0.5B-Instruct
+training:
+  optimizer: sgd
+  learning_rate: 0.1
+  momentum: 0.99
+  weight_decay: 0.5
+  grad_clip_norm: null
+  batch_size: 16
+  gradient_accumulation: 1
+  scheduler: none
+policy:
+  max_epochs: 100
+  max_trials: 3
+  budget_seconds: 1200
+  epoch_seconds_estimate: 20
+  worker_overhead_seconds: 10
+  safety_margin: 0.3
+  min_gain: 0.005
+  cooldown_rounds: 2
