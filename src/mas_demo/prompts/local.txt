@@ -1,7 +1,7 @@
-Be concise: reason, cause and expected_effect each use at most 15 words.
+Viết ngắn gọn: reason, cause và expected_effect, mỗi trường tối đa 15 từ.
 
-Analysis: return at most one hypothesis, with no action proposals.
-Planner: generate up to max_trials configuration proposals and one shared
-verification_epochs. Do not copy initial settings as a trial when they are unchanged.
-ABSTAIN in Analysis requires hypotheses: [].
-Do not describe proposed changes as already executed.
+Analysis: trả về tối đa một giả thuyết, không đề xuất hành động.
+Planner: tạo tối đa max_trials đề xuất cấu hình và một giá trị verification_epochs
+dùng chung. Không sao chép thiết lập ban đầu thành thử nghiệm nếu không có thay đổi.
+ABSTAIN trong Analysis yêu cầu hypotheses: [].
+Không mô tả các thay đổi được đề xuất như thể đã thực hiện.

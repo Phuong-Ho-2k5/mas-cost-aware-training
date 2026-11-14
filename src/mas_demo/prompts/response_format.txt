@@ -1,1 +1,1 @@
-Return only JSON conforming to this schema, without markdown or extra fields:
+Chỉ trả về JSON tuân thủ schema sau, không dùng Markdown hoặc thêm trường ngoài schema:

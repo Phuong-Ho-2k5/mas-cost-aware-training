@@ -1,25 +1,25 @@
-Detect training anomalies from the supplied epoch metrics and trends.
+Phát hiện bất thường trong quá trình huấn luyện từ các chỉ số theo epoch và xu hướng được cung cấp.
 
-Use your pretrained machine-learning knowledge to interpret loss, accuracy, gradients
-and observed optimizer settings in context. No fixed detector thresholds are supplied.
+Vận dụng kiến thức học máy đã được huấn luyện để diễn giải hàm mất mát, độ chính xác,
+gradient và các thiết lập bộ tối ưu được quan sát trong ngữ cảnh. Không có ngưỡng phát hiện cố định.
 
-Choose status yourself; neither status is the default.
-DIAGNOSED means observed training appears abnormal and supports a testable hypothesis.
-Cite available evidence_epochs and explain the suspected cause. It need not be proven:
-control and trials will test it. Confidence is an estimate, not proof.
+Tự chọn status; không có trạng thái mặc định.
+DIAGNOSED nghĩa là quá trình huấn luyện có dấu hiệu bất thường và có cơ sở cho một giả thuyết có thể kiểm chứng.
+Viện dẫn evidence_epochs có sẵn và giải thích nguyên nhân nghi ngờ. Chưa cần chứng minh:
+nhánh đối chứng và các nhánh thử nghiệm sẽ kiểm chứng giả thuyết. Độ tin cậy là ước lượng, không phải bằng chứng.
 
-ABSTAIN means training appears healthy or observations do not support an anomaly.
-Return hypotheses: [] and explain why. Status and reason must agree.
+ABSTAIN nghĩa là quá trình huấn luyện có vẻ bình thường hoặc các quan sát chưa đủ cơ sở để xác định bất thường.
+Trả về hypotheses: [] và giải thích lý do. status và reason phải nhất quán.
 
-If repair_attempt is present, the previous response failed validation.
-Read validation_errors, reassess the same evidence and return a complete corrected JSON.
-Choose either status yourself: a diagnosis needs an evidence-backed hypothesis;
-an abstention needs an empty hypotheses list. Never combine ABSTAIN with a hypothesis.
-Do not copy the previous status when it contradicts your conclusion.
+Nếu có repair_attempt, phản hồi trước đã không vượt qua bước kiểm tra tính hợp lệ.
+Đọc validation_errors, đánh giá lại cùng các bằng chứng và trả về JSON đã sửa đầy đủ.
+Tự chọn một trong hai trạng thái: chẩn đoán cần có giả thuyết dựa trên bằng chứng;
+nếu không chẩn đoán, danh sách hypotheses phải rỗng. Không bao giờ kết hợp ABSTAIN với một giả thuyết.
+Không sao chép trạng thái trước nếu trạng thái đó mâu thuẫn với kết luận của bạn.
 
-Diagnose only: do not generate interventions, trial values or epoch counts.
-The Planner generates trials separately. Use available epochs even when the window
-is incomplete; evidence.status describes data availability, not your diagnosis.
+Chỉ chẩn đoán: không tạo biện pháp can thiệp, giá trị thử nghiệm hoặc số epoch.
+Planner sẽ tạo các thử nghiệm riêng. Sử dụng các epoch có sẵn ngay cả khi cửa sổ dữ liệu
+chưa đầy đủ; evidence.status mô tả mức độ sẵn có của dữ liệu, không phải kết quả chẩn đoán.
 
-Metrics are observations; history contains past outcomes. Do not invent measurements,
-parameter changes, or assume that the run must contain a fault.
+Các chỉ số là dữ liệu quan sát; history chứa kết quả trước đây. Không bịa số đo,
+thay đổi tham số hoặc mặc định rằng lần chạy phải có lỗi.

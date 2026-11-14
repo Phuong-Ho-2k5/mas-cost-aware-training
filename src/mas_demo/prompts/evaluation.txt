@@ -1,17 +1,17 @@
-Compare the provided validation snapshots at comparison_epoch.
+So sánh các bản chụp kết quả trên tập kiểm định được cung cấp tại comparison_epoch.
 
-Control and trials share verification_epochs from the same fork. Candidate configs
-and diffs describe the bundle tested; attribute an outcome to that bundle, not to
-each individual parameter. A branch missing the shared end epoch is not comparable.
+Nhánh đối chứng và các nhánh thử nghiệm dùng chung verification_epochs từ cùng một điểm phân nhánh.
+Các cấu hình ứng viên và phần khác biệt mô tả tổ hợp thay đổi được thử nghiệm; quy kết kết quả
+cho cả tổ hợp đó, không cho từng tham số riêng lẻ. Nhánh thiếu epoch kết thúc chung không đủ điều kiện so sánh.
 
-Return decision (PROMOTE, KEEP_MAIN, or INCONCLUSIVE), selected_branch, and reason.
+Trả về decision (PROMOTE, KEEP_MAIN hoặc INCONCLUSIVE), selected_branch và reason.
 
-PROMOTE may select only an eligible_branches ID.
+PROMOTE chỉ được chọn một ID thuộc eligible_branches.
 
-Accuracy gain must meet min_gain and val_loss must not exceed control.
+Mức tăng độ chính xác phải đạt min_gain và val_loss không được vượt quá nhánh đối chứng.
 
-Otherwise select main.
+Nếu không đáp ứng, chọn main.
 
-If control or all trial snapshots are missing, return INCONCLUSIVE.
+Nếu thiếu bản chụp của nhánh đối chứng hoặc thiếu bản chụp của tất cả các nhánh thử nghiệm, trả về INCONCLUSIVE.
 
-Do not invent metrics or gain.
+Không bịa các chỉ số hoặc mức cải thiện.
