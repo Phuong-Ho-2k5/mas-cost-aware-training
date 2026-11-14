@@ -1,25 +1,25 @@
-Generate a trial plan from the diagnosis, observed metrics, active training config,
-capabilities, past outcomes, remaining epochs and remaining training-worker budget.
+Lập kế hoạch thử nghiệm dựa trên chẩn đoán, các chỉ số quan sát, cấu hình huấn luyện đang dùng,
+khả năng hỗ trợ, kết quả trước đây, số epoch còn lại và ngân sách còn lại của worker huấn luyện.
 
-Choose the number and order of proposals yourself, from zero up to max_trials.
-Create novel absolute setting values, not IDs from a menu. Each proposal is an atomic
-patch and may change several supported fields. Copy the active base_config_hash.
-Cite a supplied hypothesis_id and evidence_epochs. Do not modify experiment policy.
+Tự chọn số lượng và thứ tự các đề xuất, từ 0 đến max_trials.
+Tạo các giá trị thiết lập tuyệt đối mới, không chọn ID từ một danh sách có sẵn. Mỗi đề xuất
+là một bản vá nguyên tử và có thể thay đổi nhiều trường được hỗ trợ. Sao chép base_config_hash đang dùng.
+Viện dẫn hypothesis_id và evidence_epochs đã được cung cấp. Không sửa chính sách thử nghiệm.
 
-Choose verification_epochs yourself: one positive integer shared by control and ALL
-trials in this plan, no greater than remaining_epochs. Account for control plus every
-trial, startup/teardown, safety margin and continuation in the cost_estimate.
-There are no per-trial horizons. Do not assume any suggested/default horizon exists.
+Tự chọn verification_epochs: một số nguyên dương dùng chung cho nhánh đối chứng và TẤT CẢ
+các nhánh thử nghiệm trong kế hoạch, không vượt quá remaining_epochs. Trong cost_estimate,
+tính cả nhánh đối chứng, mọi nhánh thử nghiệm, khởi tạo/dọn dẹp, biên an toàn và việc tiếp tục huấn luyện.
+Không có số epoch kiểm chứng riêng cho từng thử nghiệm. Không giả định có số epoch được gợi ý hoặc mặc định.
 
-Omitted patch fields remain unchanged. Explicit null disables only nullable features.
-Include only fields you intend to change, not a copy of the whole current_config.
-Include component-specific options only for the selected optimizer or scheduler;
-consult capabilities.component_options. Do not include inactive options.
-Do not put null on nonnullable settings. Proposals must produce distinct, nontrivial
-configs. Fields and mathematical constraints describe engine capabilities, not a menu
-of values to copy. Do not invent trials merely to fill max_trials.
+Các trường bị lược bỏ khỏi bản vá được giữ nguyên. Giá trị null tường minh chỉ vô hiệu hóa các tính năng cho phép null.
+Chỉ đưa vào các trường định thay đổi, không sao chép toàn bộ current_config.
+Chỉ đưa vào các tùy chọn riêng của bộ tối ưu hoặc bộ lập lịch đã chọn;
+tham khảo capabilities.component_options. Không đưa vào các tùy chọn không được sử dụng.
+Không đặt null cho thiết lập không cho phép null. Các đề xuất phải tạo ra các cấu hình
+khác nhau và thực sự thay đổi cấu hình hiện tại. Các trường và ràng buộc toán học mô tả khả năng
+của hệ thống, không phải danh sách giá trị để sao chép. Không tạo thử nghiệm chỉ để đủ max_trials.
 
-If validation_errors are supplied, revise the ENTIRE previous plan once. You may
-choose fewer trials or a different common epoch count; no branch has run yet.
-If no useful feasible plan is supported, return proposals: [],
-verification_epochs: null and a reason. Do not claim an unexecuted trial succeeded.
+Nếu có validation_errors, sửa lại TOÀN BỘ kế hoạch trước một lần. Có thể chọn
+ít thử nghiệm hơn hoặc số epoch dùng chung khác; chưa có nhánh nào được chạy.
+Nếu không có đủ cơ sở cho một kế hoạch hữu ích và khả thi, trả về proposals: [],
+verification_epochs: null và lý do. Không khẳng định một thử nghiệm chưa chạy đã thành công.
