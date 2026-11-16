@@ -163,6 +163,12 @@ def run_case(case, spec, gateway):
             ),
             reason="Observed progress" if healthy else "Test alternatives",
         )
+        diagnosis_source = "authored_default"
+        if "diagnosis" in case:
+            report = DiagnosisReport.model_validate(case["diagnosis"])
+            diagnosis_source = "fixture"
+        remaining = case.get("remaining_epochs", remaining)
+        budget = case.get("remaining_budget_seconds", budget)
         result, meta = plan_with_agent(
             spec,
             report,
@@ -176,6 +182,7 @@ def run_case(case, spec, gateway):
             {"epoch_seconds": 20, "worker_overhead_seconds": 10, "safety_margin": 0.3},
             gateway=gateway,
         )
+        meta["diagnosis_source"] = diagnosis_source
         actual, schema = "INVALID", ConfigPlanResponse
         if result is not None:
             try:
@@ -243,7 +250,7 @@ def run_case(case, spec, gateway):
     if raw is not None and meta.get("finish_reason") in (None, "stop"):
         try:
             Draft202012Validator(
-                response_schema(
+                meta.get("response_schema") or response_schema(
                     role, schema, meta.get("mode", spec.analysis_mode), spec.max_trials
                 )
             ).validate(json.loads(raw))
@@ -251,6 +258,15 @@ def run_case(case, spec, gateway):
         except (ValueError, ValidationError):
             pass
     semantic_valid = schema_valid and "error" not in meta
+    initial = (meta.get("calls") or [meta])[0]
+    initial_schema_valid = False
+    if isinstance(initial.get("raw_output"), str) and initial.get("finish_reason") in (None, "stop"):
+        try:
+            Draft202012Validator(initial.get("response_schema") or response_schema(role, schema, meta.get("mode", spec.analysis_mode), spec.max_trials)).validate(json.loads(initial["raw_output"]))
+            initial_schema_valid = True
+        except (ValueError, ValidationError):
+            pass
+    initial_semantic_valid = initial_schema_valid and not initial.get("error") and not initial.get("validation_error")
     correct = semantic_valid and (
         case["expected"] == "VALID" or actual == case["expected"]
     )
@@ -279,6 +295,8 @@ def run_case(case, spec, gateway):
         expected=case["expected"],
         actual=actual,
         schema_valid=schema_valid,
+        initial_schema_valid=initial_schema_valid,
+        initial_semantic_valid=initial_semantic_valid,
         semantic_valid=semantic_valid,
         transport_ok=bool(meta.get("request_id") or meta.get("upstream_errors")),
         api_success=bool(meta.get("request_id")),
@@ -303,7 +321,7 @@ def summarize(records):
                 + "_rate": (
                     sum(bool(r.get(key)) for r in rows) / len(rows) if rows else None
                 )
-                for key in ("schema_valid", "semantic_valid", "correct", "transport_ok")
+                for key in ("schema_valid", "semantic_valid", "initial_schema_valid", "initial_semantic_valid", "correct", "transport_ok", "error_fallback", "repair_attempted")
             },
         }
 
@@ -312,12 +330,34 @@ def summarize(records):
         role: rates([r for r in records if r["role"] == role])
         for role in ("analysis", "planner", "evaluation")
     }
+    planners = [row for row in records if row["role"] == "planner"]
+    result["planner_outcomes"] = {
+        "count": len(planners),
+        "valid_nonempty_count": sum(bool(row.get("semantic_valid")) and row.get("actual") == "NONEMPTY" for row in planners),
+        "valid_empty_count": sum(bool(row.get("semantic_valid")) and row.get("actual") == "EMPTY" for row in planners),
+        "noop_count": sum((row.get("validation_error") or {}).get("code") == "NO_OP" for row in planners),
+        "budget_rejected_count": sum((row.get("validation_error") or {}).get("code") == "INSUFFICIENT_BUDGET" for row in planners),
+        "truncated_count": sum(row.get("finish_reason") == "length" for row in planners),
+    }
     values = [r["latency_seconds"] for r in records]
     result["latency_seconds"] = {
         "p50": float(np.percentile(values, 50)) if values else None,
         "p95": float(np.percentile(values, 95)) if values else None,
         "total": sum(values),
     }
+    for role, row in result["roles"].items():
+        timings = [r["latency_seconds"] for r in records if r["role"] == role]
+        row["latency_seconds"] = {"p50": float(np.percentile(timings, 50)) if timings else None,
+                                  "p95": float(np.percentile(timings, 95)) if timings else None}
+    result["token_usage"] = {}
+    for record in records:
+        usage = record.get("usage")
+        if isinstance(usage, dict):
+            for name, value in usage.items():
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    result["token_usage"][name] = result["token_usage"].get(name, 0) + value
+    result["repair_count"] = sum(bool(r.get("repair_attempted")) for r in records)
+    result["error_count"] = sum(bool(r.get("error_fallback")) for r in records)
     measurements = [r.get("server", {}) for r in records]
     result["resources"] = {
         "peak_vram_mb": max(
@@ -376,6 +416,9 @@ def summarize(records):
         and result["autonomy"]["novel_numeric_proposals"] > 0
     )
     result["limitations"] = (
-        "Authored demo expectations; Planner VALID scores executable semantics, not usefulness or causal truth. Does not measure CIFAR generalization. Guard rejection tests are separate from model quality."
+        "Authored demo expectations; Planner VALID accepts valid abstention, while NONEMPTY requires an executable trial. Fixture/authored diagnoses test Planner independently, not Analysis quality or causal truth. Does not measure CIFAR generalization. Guard rejection tests are separate from model quality."
     )
+    result["quality_thresholds_met"] = (result["demo_thresholds_met"]
+        and all(row["semantic_valid_rate"] is not None and row["semantic_valid_rate"] >= 0.95 for row in result["roles"].values())
+        and result["latency_seconds"]["p95"] is not None and result["latency_seconds"]["p95"] <= 60)
     return result

@@ -1,233 +1,307 @@
 # MAS — autonomous training trials
 
-Demo local: training → Analysis → Planner → control/trials → Evaluation → tiếp tục.
+Demo huấn luyện có ba Agent: **Analysis → Planner → Evaluation**. Training chạy
+trong worker; LLM đọc logs, lập thử nghiệm và so sánh kết quả control/trial.
+Protocol v3 để Planner tự chọn giá trị cấu hình và số epoch kiểm chứng, không có
+menu trial hoặc danh sách hyperparameter định sẵn trong YAML.
 
-Protocol v3 bỏ danh sách trial gợi ý trong YAML. Analysis tự nhận biết bất thường từ
-metrics; Planner tự sinh giá trị config mới, số lượng trial và một số epoch chung
-cho mọi trial cùng nhánh control trong lượt đó.
+## Chạy nhanh trên máy đã chuẩn bị
 
-## Chuẩn bị trên Windows / PowerShell
+Chạy từ thư mục project trên ổ D, có `.venv` và runtime vLLM đã được qualification.
+Nếu chưa có môi trường, xem phần chuẩn bị bên dưới.
 
-Cần Python 3.10 trở lên. Chạy các lệnh bên dưới từ thư mục project.
-Nếu máy đã có môi trường MAS và Qwen, có thể bỏ qua bước cài đặt.
-
-Tạo `.env` nếu chưa có, rồi chỉnh giá trị theo máy của bạn:
+Terminal 1 — bật server, chờ script báo ready:
 
 ```powershell
-if (-not (Test-Path .env)) { Copy-Item .env.example .env }
-notepad .env
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start_vllm.ps1
 ```
 
-Các biến chính:
+Terminal 2 — chạy smoke 8 epoch:
 
-| Biến | Ý nghĩa |
-| --- | --- |
-| `LLM_BASE_URL` | Endpoint cho agent; local mặc định `http://127.0.0.1:8000/v1`. |
-| `LOCAL_LLM_DEVICE` | Thiết bị chạy Qwen: `cuda` hoặc `cpu`; mẫu mặc định `cuda`. |
-| `LOCAL_LLM_MODEL_CACHE` | Đường dẫn cache riêng của máy; để trống dùng `tmp/model-cache`. |
-| `LOCAL_LLM_MODEL`, `LOCAL_LLM_REVISION` | Model và revision được Qwen server nạp. |
-| `LLM_TIMEOUT_SECONDS`, `LLM_DEADLINE_SECONDS` | Giới hạn chờ request và tổng thời gian gọi agent. |
-| `LLM_MAX_OUTPUT_TOKENS` | Giới hạn output của agent local. |
-| `OPENROUTER_API_KEY` | Chỉ cần khi dùng OpenRouter. |
-| `LLM_API_KEY` | Chỉ cần khi endpoint ngoài yêu cầu xác thực. Server Qwen đi kèm không kiểm tra key này. |
-| `HF_TOKEN` | Tùy chọn cho model Hugging Face private/gated; Qwen public không cần. |
+```powershell
+.\.venv\Scripts\python.exe -m mas_demo.cli run --config configs/autonomous_smoke.yaml --output "artifacts/smoke-$(Get-Date -Format yyyyMMdd-HHmmss)"
+```
 
-`.env` chứa key, endpoint riêng và đường dẫn của máy, được Git bỏ qua.
-`.env.example` chỉ chứa giá trị mẫu. CLI và script setup/start Qwen đọc `.env`;
-biến môi trường có sẵn được ưu tiên. Tham số `-Device` và `-ModelCache` có thể
-ghi đè lựa chọn mặc định của launcher; `HF_HOME` là override riêng cho Hugging Face.
-Model agent được chọn bằng `model_id` trong YAML và phải khớp model server đang phục vụ.
+Terminal 3 — xem dashboard:
 
-Cài môi trường training:
+```powershell
+.\.venv\Scripts\python.exe -m streamlit run app/dashboard.py
+```
+
+Mở `http://localhost:8501` và chọn run vừa tạo. Dashboard chỉ đọc artifacts.
+Mỗi output directory dành cho một run; luôn dùng tên mới khi chạy lại.
+
+Backend local mặc định là **vLLM**, model **Qwen/Qwen3.5-0.8B**, API tại
+`http://127.0.0.1:8000/v1`. Server không có giao diện chat. Training kết thúc
+không tự tắt server; dừng bằng:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/stop_vllm.ps1
+```
+
+## Phân công và luồng quyết định
+
+1. Worker huấn luyện một epoch; collector gom tối đa `window` epoch gần nhất.
+2. **Analysis quyết định bất thường từ training logs**: xu hướng loss, accuracy,
+   gradient và quan sát theo epoch. Config/data chỉ hỗ trợ giải thích nguyên
+   nhân có thể xảy ra, không tự quyết định status. `DIAGNOSED` là giả thuyết có
+   evidence cần kiểm chứng; `ABSTAIN` là logs bình thường hoặc chưa đủ căn cứ.
+3. Planner nhận diagnosis, cấu hình đang active, capabilities, lịch sử và tài
+   nguyên còn lại. Nó tự chọn từ 0 đến `policy.max_trials` trial. **Giá trị 3 là
+   trần, không phải số trial bắt buộc.**
+4. Mỗi proposal là patch tối thiểu: `changes` chỉ chứa giá trị thực sự khác
+   `current_config`. Planner chọn một `verification_epochs` chung cho control
+   và mọi trial, không vượt số epoch còn lại.
+5. Compiler kiểm cấu hình và admission reserve toàn bộ ngân sách trước khi chạy.
+   Plan bị từ chối được gửi lại cho Planner sửa tối đa một lần. Code không tự bỏ
+   trial, rút horizon hoặc tạo giá trị thay cho LLM.
+6. Control/trial bắt đầu từ cùng checkpoint và chạy cùng số epoch. Evaluation
+   chỉ so snapshot tại đúng comparison epoch; nhánh chưa đủ horizon không được promote.
+7. Nhánh được chọn tiếp tục với config, optimizer/scheduler/RNG và revision/hash
+   tương ứng. Analysis được gọi lại sau epoch main tiếp theo.
+
+Analysis được gọi từ epoch 1 dù chưa đủ window, kể cả epoch cuối. Không mở trial
+sau giới hạn epoch. Planner abstain không thay đổi diagnosis của Analysis.
+Không có detector bất thường theo ngưỡng cố định hoặc Python tùy ý do model sinh.
+
+## Chuẩn bị môi trường
+
+### Windows training và biến môi trường
+
+Cần Python 3.10 trở lên. Cài môi trường training:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/setup.ps1
+if (-not (Test-Path .env)) { Copy-Item .env.example .env }
 ```
 
-Qwen local dùng môi trường server riêng:
+Chỉnh `.env` theo máy; file này được Git bỏ qua. Biến process có sẵn ưu tiên hơn
+`.env`. `model_id` nằm trong YAML và phải khớp model server; `LOCAL_LLM_MODEL`
+chỉ phục vụ launcher Transformers cũ.
+
+| Biến | Mặc định / mục đích |
+| --- | --- |
+| `LLM_LOCAL_BACKEND` | `vllm`; dùng `bundled` cho Transformers cũ. |
+| `LLM_BASE_URL` | `http://127.0.0.1:8000/v1`. |
+| `LLM_RUNTIME_MANIFEST` | `tmp/vllm/runtime-manifest.json`, bắt buộc xác minh runtime vLLM. |
+| `LLM_TIMEOUT_SECONDS` / `LLM_DEADLINE_SECONDS` | 120 / 130 giây. |
+| `LLM_MAX_OUTPUT_TOKENS` | 1024; nằm chung context budget với prompt. |
+| `LLM_API_KEY` | Tùy chọn khi endpoint ngoài yêu cầu xác thực. |
+| `OPENROUTER_API_KEY` | Cần khi `analysis_mode: openrouter`. |
+| `HF_TOKEN` | Tùy chọn cho checkpoint private/gated; model public không yêu cầu. |
+| `LOCAL_LLM_DEVICE`, `LOCAL_LLM_MODEL_CACHE` | Thiết bị/cache của launcher cũ. |
+| `LOCAL_LLM_MODEL`, `LOCAL_LLM_REVISION`, `HF_HOME` | Model/revision/cache của launcher cũ; tách khỏi lựa chọn Agent trong YAML. |
+
+### vLLM trong WSL2 trên ổ D
+
+Launcher hiện gắn với môi trường Windows/WSL2 đã kiểm chứng: distro `MAS-vLLM`,
+VHDX tại `D:\HK261\wsl\mas-vllm`, Linux Python 3.12 tại `/opt/mas-vllm/venv`.
+Cache/checkpoint/log Linux nằm dưới `/opt/mas-vllm` trong VHDX trên D. Host cần
+NVIDIA GPU dùng được từ WSL2, compute capability ít nhất 7.5.
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check_vllm_host.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup_vllm.ps1
+```
+
+Host preflight mặc định kiểm distro `Ubuntu` có sẵn; sau setup có thể chọn
+`-Distro MAS-vLLM -MinimumDFreeGiB 10` để kiểm distro dành riêng. Setup cần C
+còn ít nhất 4 GiB, D ít nhất 35 GiB trước cài và 10 GiB sau cài. Nó tạo/cập nhật
+môi trường riêng, không tự tải checkpoint hoặc khởi động API. Triton JIT còn cần
+`build-essential` và `python3.12-dev` trong distro.
+
+`requirements-vllm.in` là input của setup; setup resolve ra lock môi trường
+Linux. `requirements-vllm.lock` ghi version/hash của môi trường đã qualification,
+được launcher kiểm SHA256; **không cài file này vào Windows `.venv`**. Setup có
+fallback resolve 0.20.0, nhưng môi trường fallback chưa tự được xem là đạt profile
+serving đã khóa; launcher còn kiểm package/version thực tế.
+
+`.gitattributes` giữ LF cho script `.sh` và file lock, kể cả checkout trên Windows
+có bật `core.autocrlf`, để Bash chạy đúng và lock hash không đổi theo kiểu xuống dòng.
+
+Profile serving đã khóa: Qwen3.5-0.8B revision
+`2fc06364715b967f1860aea9cf38778875588b17`, FP16, không lượng tử hóa, context
+4096, `max_num_seqs=1`, batch token 1024, GPU memory utilization 0.65, thinking
+tắt và compact JSON qua XGrammar. `scripts/wsl/start_vllm.sh` dùng cache offline;
+snapshot model phải được tải đầy đủ trước khi chạy probe.
+
+Probe checkpoint chạy riêng cổng 8001, dùng output directory mới:
+
+```powershell
+wsl -d MAS-vLLM -u root --exec env HF_HOME=/opt/mas-vllm/cache/huggingface XDG_CACHE_HOME=/opt/mas-vllm/cache TMPDIR=/opt/mas-vllm/tmp /opt/mas-vllm/venv/bin/python /mnt/d/HK261/MAS/scripts/check_vllm_qwen.py --launch --gpu-memory-utilization 0.65 --output /opt/mas-vllm/probes/new-run-name
+```
+
+Probe ghi `probe.json`, snapshot hashes, responses, resources và server log;
+khi kết thúc dừng nhóm process do nó tạo. Nạp được weights chưa đủ xác nhận API,
+context, structured output hoặc khả năng hủy request hoạt động.
+
+**Clone mới chưa có đủ dữ liệu để gọi start ngay.** Lifecycle cần các file local
+`tmp/vllm/launch-profile.json` và `tmp/vllm/task2-qualification.json` từ môi trường
+đã qualification, có lock hash và package metadata khớp. `qualified_runtime()`
+có thể lấy qualification từ manifest cũ tương thích khi file riêng chưa tồn tại.
+Setup/probe hiện chưa tự đưa toàn bộ dữ liệu này vào lifecycle launcher; chúng
+không phải file mẫu được commit. Đây là workflow cho profile máy đã chuẩn bị,
+chưa phải trình cài vLLM portable cho mọi máy.
+
+Start chờ ready tối đa 600 giây rồi trả quyền điều khiển, để server chạy background.
+Start/stop mặc định cổng 8000, hỗ trợ `-Port 8001` cho candidate. Stop kiểm ownership,
+kernel birth identity, process group và Windows relay; không dừng process ngoài
+nhóm đã xác minh. Restart bằng stop rồi start, chạy tuần tự.
+
+### Transformers cũ và OpenRouter
+
+Rollback Transformers dùng môi trường Windows riêng:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/setup_local_llm.ps1
+powershell -ExecutionPolicy Bypass -File scripts/stop_vllm.ps1
 ```
 
-## Chạy AUTOTRAINER Oscillating Loss
-
-Terminal 1 — bật Qwen và giữ terminal mở:
+Đặt `LLM_LOCAL_BACKEND=bundled` và endpoint phù hợp trong `.env`; trong config run
+mới đặt `model_id: Qwen/Qwen2.5-0.5B-Instruct`. Launcher cũ đọc
+`LOCAL_LLM_MODEL`/revision trong `.env`:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/start_local_llm.ps1
 ```
 
-Launcher đọc thiết bị từ `.env`. Muốn dùng CPU cho Qwen, thêm `-Device cpu`.
-Đợi log `Application startup complete` rồi chạy training.
-API mặc định tại http://127.0.0.1:8000/v1; server chỉ bind loopback và không có giao diện chat.
+Hai server GPU chạy lần lượt. Trước khi phục hồi vLLM, dừng server cũ bằng
+`scripts/stop_local_llm.ps1`, phục hồi `LLM_LOCAL_BACKEND=vllm`/model_id Qwen3.5
+rồi gọi start_vllm. Dùng terminal mới hoặc cập nhật process env để tránh override
+cấu hình `.env` vừa sửa. Không sửa model_id trong artifacts lịch sử.
 
-Terminal 2 — chạy case AUTOTRAINER:
+OpenRouter dùng `analysis_mode: openrouter`, `model_id` tương thích endpoint và
+`OPENROUTER_API_KEY` trong `.env`.
 
-```powershell
-.\.venv\Scripts\python.exe -m mas_demo.cli run --config configs/autotrainer_oscillating_loss.yaml --output artifacts/autotrainer-oscillating-v1
-```
+## Config, ngân sách và capability
 
-Config này là bản port PyTorch của `Oscillating_Loss_Case/config.pkl` trong
-[AUTOTRAINER](https://github.com/shiningrain/AUTOTRAINER/tree/03a463ea05691a73403d7cff99a368fb4b6720cf/AutoTrainer/demo_case/Oscillating_Loss_Case), không cần TensorFlow/Keras:
-
-- Blobs 1.000 mẫu, 2 đặc trưng, 3 lớp; 700 mẫu đầu train, 300 mẫu cuối validation.
-- MLP 2 → 50 ReLU → 3, gồm 303 tham số, dùng trọng số khởi tạo gốc.
-- SGD `lr=0.01`, momentum `0.9`, batch size `1`; training chạy CPU.
-- Analysis sau mỗi epoch, window `5`. LLM tự đánh giá bất thường và đề xuất trial.
-- Config hiện tại giới hạn **200 epoch** và **600 giây thời gian worker**.
-
-Run có thể dừng vì hết budget trước epoch 200. Muốn demo ngắn, đặt
-`policy.max_epochs: 20`; muốn chạy dài, tăng `policy.budget_seconds` theo kết quả profile.
-Thời gian LLM chưa nằm trong budget worker nên tổng thời gian thực tế có thể dài hơn.
-Đây là bản port, không tái tạo bitwise Keras vì RNG, shuffle và optimizer có thể khác.
-Tên case không bảo đảm LLM sẽ phát hiện hoặc sửa được bất thường.
-
-Mỗi output directory chỉ dành cho một run. Nếu `autotrainer-oscillating-v1` đã tồn tại,
-đổi tên output thành `autotrainer-oscillating-v2` khi chạy mới.
-
-Chỉ kiểm tra một epoch qua worker, không cần bật Qwen:
-
-```powershell
-.\.venv\Scripts\python.exe -m mas_demo.cli profile --config configs/autotrainer_oscillating_loss.yaml --output artifacts/autotrainer-oscillating-profile-v1
-```
-
-Kết quả đo nằm trong `artifacts/autotrainer-oscillating-profile-v1/profile.json`.
-
-## Xem kết quả
-
-Terminal 3 — bật dashboard:
-
-```powershell
-.venv/Scripts/python -m streamlit run app/dashboard.py
-```
-
-Mở http://localhost:8501 và chọn run mới. Dashboard chỉ đọc artifacts.
-Kết quả AUTOTRAINER nằm trong `artifacts/autotrainer-oscillating-v1/`.
-
-## Các config hiện có
-
-| File | Dữ liệu và trạng thái ban đầu |
+| Config | Dữ liệu / giới hạn |
 | --- | --- |
-| `autotrainer_oscillating_loss.yaml` | Blobs 700/300; MLP gốc; SGD LR 0.01, momentum 0.9, batch 1; tối đa 200 epoch, budget worker 600 giây. |
-| `autonomous_mixed.yaml` | CIFAR-10 subset 4.096/1.024; LR 0.1, momentum 0.99, decay 0.5; tối đa 100 epoch. |
-| `autonomous_healthy.yaml` | Cùng subset; LR 0.01, momentum 0.9, decay 0; tối đa 20 epoch. |
-| `autonomous_smoke.yaml` | Synthetic 128/32; kiểm tra luồng, không phải bằng chứng CIFAR. |
+| `autonomous_smoke.yaml` | Synthetic 128/32, tối đa 8 epoch; kiểm tra luồng. |
+| `autonomous_healthy.yaml` | CIFAR-10 subset 4.096/1.024, tối đa 20 epoch. |
+| `autonomous_mixed.yaml` | Cùng subset, LR 0.1, momentum 0.99, decay 0.5; tối đa 100 epoch. |
+| `autotrainer_oscillating_loss.yaml` | Blobs 700/300, MLP 2→50→3, SGD LR 0.01, momentum 0.9, batch 1; tối đa 200 epoch, worker budget 600 giây. |
 
-Chạy config khác bằng cách thay `--config` và chọn output mới:
-
-```powershell
-.venv/Scripts/python -m mas_demo.cli run --config configs/autonomous_mixed.yaml --output artifacts/autonomous-mixed-v3
-.venv/Scripts/python -m mas_demo.cli run --config configs/autonomous_healthy.yaml --output artifacts/autonomous-healthy-v3
-.venv/Scripts/python -m mas_demo.cli run --config configs/autonomous_smoke.yaml --output artifacts/autonomous-smoke-v3
-```
-
-CIFAR-10 được tải lần đầu; có thể tải trước bằng
-`.venv/Scripts/python scripts/download_cifar.py`. Blobs được sinh tại chỗ, không cần tải dataset.
-
-`training` là trạng thái khởi đầu; `policy` là giới hạn run. Không có
-`allowed_interventions`, `lr_factors`, `trial_horizon` hoặc menu candidate.
-
-`policy.max_trials: 3` là trần; LLM được sinh ít hơn hoặc abstain.
-`policy.budget_seconds` tính thời gian worker gồm startup/teardown. LLM latency,
-tokens và tổng wall time được báo riêng; đây chưa phải cap cho toàn bộ GPU LLM.
-
-## Luồng từng epoch và quyền quyết định
-
-1. Main train một epoch. Collector chỉ gom tối đa năm epoch gần nhất.
-2. Analysis dùng kiến thức ML để trả DIAGNOSED hoặc ABSTAIN; không có detector theo ngưỡng.
-3. DIAGNOSED chỉ cần giả thuyết có evidence; không cần chọn intervention.
-4. Planner nhận config đang active, evidence, capability, lịch sử và tài nguyên còn lại.
-5. Planner tự sinh các patch tuyệt đối, có thể sửa nhiều field, và một
-   `verification_epochs` chung cho cả lượt.
-6. Code kiểm tra plan và reserve toàn bộ budget trước khi chạy. Kế hoạch không hợp lệ
-   hoặc thiếu budget được phản hồi cho Planner tối đa một lần. Code không tự bỏ trial
-   hoặc rút ngắn horizon.
-7. Control và tất cả trials bắt đầu từ cùng checkpoint, chạy cùng số epoch.
-   Evaluation chỉ so metrics tại đúng comparison epoch.
-8. Nhánh thắng được tiếp tục cùng config, optimizer/scheduler/RNG và revision/hash.
-   Sau epoch main tiếp theo, Analysis tiếp tục nhận biết bất thường.
-
-Analysis được gọi ngay từ epoch 1 dù chưa đầy window. Epoch cuối vẫn được phân tích;
-không mở trial sau giới hạn epoch. Trial chưa chạy đủ horizon không đủ điều kiện promote.
-
-## Các capability đã có adapter
-
-Planner có thể tự chọn giá trị hợp lệ cho LR, momentum, decay, clipping, batch size,
-gradient accumulation; đổi optimizer SGD/Adam/AdamW và scheduler none/StepLR/cosine.
-Các options như betas/epsilon chỉ áp dụng cho optimizer tương ứng. Early stopping
-được thực thi ở epoch boundary; nhánh dừng sớm không được so với snapshot khác epoch.
-
-Giới hạn type, số hữu hạn, tương thích component và budget là validation thực thi,
-không phải bộ rule nhận biết bất thường. LLM không được sửa dataset/split/seed, metric,
-ngân sách hoặc max_epochs qua trial, và không được sinh/chạy Python tùy ý.
-
-## Prompt và audit
-
-Prompt nằm trong `src/mas_demo/prompts/`:
-
-- `analysis.txt`: nhận biết và giải thích bất thường.
-- `planner.txt`: tự sinh patch và horizon chung.
-- `evaluation.txt`: so sánh kết quả thực nghiệm.
-- `local.txt`: hướng dẫn ngắn cho Qwen.
-- `response_format.txt`: JSON output.
-
-File được đọc lại mỗi request. Schema sinh từ contracts Python. Sửa prompt không tự đổi
-validator hoặc capability. Sau thay đổi protocol/schema, phải tạo run v3 mới.
-
-`artifacts/<run>/` chứa state/config, config-revisions, events.jsonl, memory.sqlite,
-worker requests/logs và checkpoint. Raw output/usage/error nằm trong metadata từng agent.
-ABSTAIN do model và ABSTAIN dự phòng vì lỗi được phân biệt bằng `metadata.error`.
-
-Nếu Analysis trả output sai schema hoặc tự mâu thuẫn (ví dụ `ABSTAIN` kèm
-hypothesis), hệ thống gửi lỗi validation để LLM tự sửa tối đa một lần trên cùng
-evidence. Code không tự đổi status hay tạo giả thuyết. ABSTAIN hợp lệ không bị gọi
-lại; lỗi kết nối/xác thực giữ chính sách gateway, không kích hoạt lượt sửa output.
-Nếu sửa vẫn thất bại, dashboard hiển thị lỗi và ABSTAIN chỉ là kết quả dự phòng,
-không phải kết luận training bình thường. `metadata.calls` giữ output/error của
-từng lần; latency, token usage và attempts ở metadata ngoài cùng tính tổng cả hai lần.
-
-Server local có endpoint `/v1/token-count` dùng đúng tokenizer để kiểm tra context trước
-suy luận. Khi cần, client bỏ history cũ hoặc dùng tham chiếu output sửa plan đã lưu;
-metrics/evidence được giữ nguyên. Các lần rút gọn được ghi ở `context_compaction`.
-Khởi động lại Qwen sau khi sửa code server. Endpoint ngoài không hỗ trợ preflight
-vẫn có thể dùng nhưng phải tự cung cấp kiểm tra context của nó.
-
-## Dừng, resume, profile và migration
+Thay `--config` và dùng output mới, ví dụ:
 
 ```powershell
-.venv/Scripts/python -m mas_demo.cli stop artifacts/autotrainer-oscillating-v1
-.venv/Scripts/python -m mas_demo.cli resume artifacts/autotrainer-oscillating-v1
-.venv/Scripts/python -m mas_demo.cli migrate-config artifacts/old-run/config.json --output tmp/migrated-v3.yaml
+.\.venv\Scripts\python.exe -m mas_demo.cli run --config configs/autotrainer_oscillating_loss.yaml --output "artifacts/autotrainer-$(Get-Date -Format yyyyMMdd-HHmmss)"
 ```
 
-Stop chờ epoch/verification boundary. Run hoàn thành resume là no-op. Crash giữa công
-việc chưa ghi đủ chi phí trả INTERRUPTED, không tự chạy lại và giả định cost bằng 0.
+AUTOTRAINER case là bản port PyTorch từ
+[Oscillating Loss Case](https://github.com/shiningrain/AUTOTRAINER/tree/03a463ea05691a73403d7cff99a368fb4b6720cf/AutoTrainer/demo_case/Oscillating_Loss_Case),
+dùng trọng số khởi tạo gốc; không bảo đảm tái tạo bitwise Keras. Blobs sinh tại
+chỗ; CIFAR tải lần đầu hoặc tải trước bằng `scripts/download_cifar.py`.
+Tên config không bảo đảm LLM phát hiện bất thường hoặc cải thiện training.
 
-Artifact v1/v2 vẫn xem được trên dashboard, nhưng không resume bằng v3. Migration chỉ
-chuyển initial settings/policy; bỏ action menus/horizon cũ, không đoán training state.
-Nếu config cũ dùng fault theo epoch, phải chuyển rõ thành initial settings trước.
-
-Dừng training không tắt Qwen. Dùng Ctrl+C trong terminal server, hoặc:
+`training` là trạng thái ban đầu; `policy` là giới hạn run. Budget chỉ tính worker
+wall time gồm startup/teardown; latency/tokens LLM và tổng wall time được báo riêng.
+Run có thể hết budget trước max_epochs. Muốn kiểm một epoch không cần LLM:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts/stop_local_llm.ps1
+.\.venv\Scripts\python.exe -m mas_demo.cli profile --config configs/autotrainer_oscillating_loss.yaml --output "artifacts/profile-$(Get-Date -Format yyyyMMdd-HHmmss)"
 ```
 
-## Kiểm thử và đánh giá model
+Planner có adapter cho LR, momentum, decay, clipping, batch size, accumulation;
+optimizer SGD/Adam/AdamW; scheduler none/StepLR/cosine và early stopping.
+Validation kiểm kiểu dữ liệu, số hữu hạn, tùy chọn component và budget. Trial
+không được sửa dataset/split/seed, metric, ngân sách hoặc max_epochs.
+
+## Đọc logs và hiểu vì sao trial chưa chạy
+
+`artifacts/<run>/` chứa `config.json`, `state.json`, config-revisions,
+`events.jsonl`, memory SQLite, worker logs và checkpoint. Một proposal có trong
+output LLM chưa có nghĩa đã được chạy:
+
+| Event / mã lỗi | Ý nghĩa |
+| --- | --- |
+| `planning` | Raw/parsed proposal cùng metadata của Planner. |
+| `plan_rejected` + `NO_OP` | Patch không đổi cấu hình hiện tại. |
+| `DUPLICATE_CONFIG` | Nhiều proposal tạo cùng một cấu hình. |
+| `INSUFFICIENT_BUDGET` | Không reserve được toàn bộ control/trial/continuation. |
+| `trial_plan` | Plan đã qua compiler/admission; bắt đầu đường verification. |
+| `decision` + `NOOP` | Vòng đó tiếp tục main, không có plan được nhận. |
+
+Planner nhận lỗi để sửa một lần. Nếu vẫn không hợp lệ, hệ thống tiếp tục main;
+không chạy lại nguyên cấu hình chỉ vì model đặt proposal_id mới. Xem các event
+verification/evaluation và `rounds/<round>/admission.json` để kiểm trial thực tế.
+
+`metadata.error` phân biệt fallback do lỗi với ABSTAIN hợp lệ. Analysis output
+sai schema hoặc mâu thuẫn được repair một lần trên cùng evidence; ABSTAIN hợp lệ
+không bị ép gọi lại. `metadata.calls` giữ từng phản hồi và chi phí tổng.
+
+## Prompt, schema và context
+
+Xem [README của prompts](src/mas_demo/prompts/README.md) để biết cách ghép từng
+backend. Prompt được đọc lại mỗi request, không cần restart vLLM khi chỉ sửa text.
+
+Schema sinh từ Python contracts; riêng vLLM được ràng buộc theo state trong
+`output_schema.py`, gửi qua trường HTTP `response_format`. `response_format.txt`
+chỉ là câu dẫn trước schema cho bundled/cloud, không phải nơi chứa schema vLLM.
+Root reason local giới hạn 160 ký tự; Planner vLLM giới hạn patch.reason và
+expected_effect 120 ký tự. Compiler/admission vẫn kiểm ngữ nghĩa sau generation.
+
+vLLM preflight dùng `/tokenize`; bundled dùng `/v1/token-count`. Tổng prompt và
+output reserve phải vừa context. Gateway có thể bỏ history cũ hoặc tham chiếu
+output trước; giữ nguyên metrics/evidence và ghi `context_compaction`. Không còn
+chỗ thì chặn generation. Sửa code server khác với sửa prompt: code server cần restart.
+
+## Kiểm thử và đánh giá
+
+Đặt thư mục tạm trên D vì các guard Windows yêu cầu dữ liệu kiểm tra ở ổ này:
 
 ```powershell
-.venv/Scripts/python -m pytest -q
-tmp/llm-server-venv/Scripts/python -m pytest tests/test_local_llm_server.py -q
-.venv/Scripts/python scripts/benchmark_config_agent.py --rounds 1 --output artifacts/config-benchmark-v3
-.venv/Scripts/python scripts/compare_local_training.py --config configs/autonomous_mixed.yaml --output artifacts/config-pilot-v3
+$env:TEMP = "$PWD\tmp\pytest"
+$env:TMP = $env:TEMP
+New-Item -ItemType Directory -Force -Path $env:TEMP | Out-Null
+.\.venv\Scripts\python.exe -m pytest -q
 ```
 
-Chạy benchmark inference riêng với training để tránh tranh tài nguyên. Bộ tình huống
-do tác giả đặt kỳ vọng; không phải ground truth nguyên nhân. Unit tests/mock pass chỉ
-chứng minh cơ chế, không bảo đảm Qwen 0.5B phát hiện đúng hoặc sinh trial hữu ích.
-Báo cáo raw schema, semantic validation và chất lượng quyết định riêng; không ép
-DIAGNOSED, không biến lỗi thành trial giả để làm kết quả trông tốt hơn.
+Suite mặc định dùng HTTP stand-in và kiểm tra ownership/process; không tự chạy
+benchmark model thật hoặc tạo distro. Test server Transformers có thể skip nếu
+chưa cài dependency riêng; kiểm riêng bằng:
 
-Dùng OpenRouter bằng cách đặt `analysis_mode: openrouter`, chọn `model_id` phù hợp
-với endpoint và điền OPENROUTER_API_KEY trong .env. Không commit key hoặc .env.
+```powershell
+.\tmp\llm-server-venv\Scripts\python.exe -m pytest tests/test_local_llm_server.py -q
+```
+
+Khi vLLM đang ready, kiểm ba role hoặc một nhóm Planner nhỏ:
+
+```powershell
+.\.venv\Scripts\python.exe scripts/check_local_agents.py --output "artifacts/agent-check-$(Get-Date -Format yyyyMMdd-HHmmss)"
+.\.venv\Scripts\python.exe scripts/benchmark_local_agents.py --rounds 1 --cases tests/fixtures/planner_recovery_cases.json --case-ids p-recovery-unstable p-recovery-healthy p-recovery-budget --output "artifacts/planner-check-$(Get-Date -Format yyyyMMdd-HHmmss)"
+```
+
+Benchmark lưu warmup riêng, không chấm vào kết quả. Đọc `report.json` và raw
+responses; benchmark CLI hiện không dùng exit code để báo mọi lỗi chất lượng.
+`VALID` chấp nhận abstain hợp lệ, còn `NONEMPTY` đòi trial qua compiler/admission.
+Fixture diagnosis kiểm Planner riêng, không chứng minh Analysis đúng. Nhóm case
+nhỏ không thể làm full quality gate thành true.
+
+`planner_outcomes` báo số trial/abstain hợp lệ, NO_OP, budget rejection và output
+bị cắt. Model vẫn có thể chẩn đoán sai, tạo trial trùng hoặc không khả thi; JSON
+hợp lệ chưa chứng minh cải thiện training. Kiểm tra trước/sau prompt đã có ca sinh
+patch mới qua admission, nhưng ca budget thấp còn bị từ chối vì proposal trùng.
+
+`compare_local_training.py` phục vụ paired pilot; chạy riêng với benchmark
+inference để tránh tranh tài nguyên. Unit tests/mock pass chỉ xác nhận cơ chế,
+không thay cho đo chất lượng ML. Script `check_vllm_simulation.py` là công cụ
+Postman tùy chọn, cần CLI và tài nguyên local `postman/` vốn được Git bỏ qua;
+nó không phải điều kiện để chạy training hoặc pytest thông thường.
+
+## Stop, resume và migration
+
+```powershell
+.\.venv\Scripts\python.exe -m mas_demo.cli stop artifacts/<run>
+.\.venv\Scripts\python.exe -m mas_demo.cli resume artifacts/<run>
+.\.venv\Scripts\python.exe -m mas_demo.cli migrate-config artifacts/<old-run>/config.json --output tmp/migrated-v3.yaml
+```
+
+Thay `<run>`/`<old-run>` bằng tên thật. Stop chờ epoch/verification boundary;
+run đã hoàn thành resume là no-op. Crash chưa ghi đủ chi phí trả INTERRUPTED,
+không giả định chi phí bằng 0 rồi tự chạy lại. Artifact v1/v2 vẫn xem được trên
+dashboard nhưng không resume bằng v3; migration chỉ chuyển initial config/policy,
+không đoán lại trạng thái training.
+
+`.env`, `tmp/`, `artifacts/`, dữ liệu, tài liệu cá nhân và `docs/`/`postman/` local
+được Git bỏ qua. Không cần các báo cáo local đó để đọc hướng dẫn trong README này.

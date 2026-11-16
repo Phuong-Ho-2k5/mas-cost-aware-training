@@ -8,7 +8,9 @@ from mas_demo.llm.gateway import OpenRouterGateway
 
 
 @pytest.fixture
-def provider():
+def provider(monkeypatch):
+    # This HTTP stand-in implements the bundled protocol, without a WSL runtime.
+    monkeypatch.setenv("LLM_LOCAL_BACKEND", "bundled")
     state = {"requests": [], "responses": {}, "statuses": {}}
 
     class Handler(BaseHTTPRequestHandler):
@@ -28,7 +30,15 @@ def provider():
 
         def do_POST(self):
             request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-            if self.path.endswith("/token-count"):
+            if self.path == "/tokenize" or self.path.endswith("/token-count"):
+                if self.path == "/tokenize":
+                    state.setdefault("tokenize_requests", []).append(request)
+                    if "tokenize_status" in state or "tokenize_response" in state:
+                        self.send_response(state.get("tokenize_status", 200))
+                        self.send_header("Content-Type", "application/json")
+                        self.end_headers()
+                        self.wfile.write(json.dumps(state.get("tokenize_response", {})).encode())
+                        return
                 if not state.get("token_context"):
                     self.send_response(404)
                     self.end_headers()
@@ -47,10 +57,9 @@ def provider():
                 self.end_headers()
                 self.wfile.write(
                     json.dumps(
-                        {
-                            "prompt_tokens": count,
-                            "context_tokens": state["token_context"],
-                        }
+                        ({"count": count, "max_model_len": state["token_context"]}
+                         if self.path == "/tokenize" else
+                         {"prompt_tokens": count, "context_tokens": state["token_context"]})
                     ).encode()
                 )
                 return
@@ -95,7 +104,7 @@ def provider():
                 json.dumps(
                     {
                         "id": "local-request",
-                        "model": "local-model",
+                        "model": state.get("response_model", "local-model"),
                         "choices": [
                             {
                                 "finish_reason": state.get("finish_reason", "stop"),

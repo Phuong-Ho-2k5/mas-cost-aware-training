@@ -8,7 +8,7 @@ val_samples: 32
 observation_interval: 1
 window: 5
 analysis_mode: local
-model_id: Qwen/Qwen2.5-0.5B-Instruct
+model_id: Qwen/Qwen3.5-0.8B
 training:
   optimizer: sgd
   learning_rate: 0.1

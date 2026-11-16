@@ -1,0 +1,15 @@
+
+Chỉ trả JSON gọn theo response_format. Không thêm Markdown/văn bản ngoài JSON.
+reason tối đa 160 ký tự; patch.reason và expected_effect tối đa 120 ký tự.
+Đóng chuỗi/object ngay khi đủ nội dung; không lặp câu để kéo dài output.
+
+Hai dạng output:
+- Không có phép thử khả thi: {"proposals":[],"verification_epochs":null,"reason":"<trở ngại cụ thể>"}.
+- Có phép thử: mỗi proposal là một bản vá tối thiểu. Chỉ có field đã đổi trong changes.
+
+Ví dụ CẤU TRÚC khi hypothesis cần thay đổi learning_rate; không phải chỉ định
+luôn chọn field này. Nếu hypothesis khác, chọn field tương ứng từ capabilities.
+Các dấu <> là chỗ tự điền dữ liệu thật; không xuất placeholder hoặc sao chép giá
+trị learning_rate cũ vào chỗ giá trị mới. Các field giữ nguyên như optimizer,
+momentum, scheduler không cần xuất trong changes.
+{"proposals":[{"proposal_id":"<ID>","hypothesis_id":"<ID từ diagnosis>","patch":{"base_config_hash":"<hash đầu vào>","changes":{"learning_rate":"<số mới KHÁC current_config.learning_rate>"},"reason":"<vì sao thay đổi này kiểm chứng hypothesis>","evidence_epochs":["<epoch thật>"]},"expected_effect":"<tác động dự kiến, chưa đo>"}],"verification_epochs":"<số epoch nguyên dương bạn chọn>","reason":"<vì sao chọn phép thử này>"}

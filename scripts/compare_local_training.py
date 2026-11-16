@@ -9,6 +9,7 @@ from mas_demo.cli import load_environment, load_spec
 from mas_demo.contracts import DiagnosisReport
 from mas_demo.llm.settings import create_gateway
 from mas_demo.llm.health import wait_for_server
+from mas_demo.llm.capture import Capture
 from mas_demo.orchestration import run
 
 
@@ -28,6 +29,16 @@ class NoInterventionBaseline:
         }
 
 
+def summarize_agent_costs(events):
+    calls = [event["metadata"] for event in events
+             if isinstance(event.get("metadata"), dict)
+             and event["metadata"].get("mode") != "disabled_baseline"
+             and (event["metadata"].get("agent") in ("analysis", "planner", "evaluation")
+                  or event.get("kind") in ("diagnosis", "planning", "evaluation"))]
+    return {"llm_seconds": sum(call.get("latency_seconds", 0) for call in calls),
+            "llm_calls": len(calls), "llm_http_attempts": sum(call.get("attempts", 0) for call in calls)}
+
+
 def main():
     load_environment()
     parser = argparse.ArgumentParser(description=__doc__)
@@ -38,10 +49,6 @@ def main():
     parser.add_argument("--train-samples", type=int)
     parser.add_argument("--val-samples", type=int)
     args = parser.parse_args()
-    root = Path(args.output)
-    root.mkdir(parents=True, exist_ok=True)
-    if (root / "pilot.json").exists():
-        parser.error("Pilot report already exists; choose a new output directory")
     base = load_spec(args.config)
     if args.max_epochs is not None:
         base.policy.max_epochs = args.max_epochs
@@ -52,60 +59,57 @@ def main():
     base = type(base).model_validate(base.model_dump())
     gateway = create_gateway(base)
     wait_for_server(gateway)
-    rows = []
-    for seed in args.seeds:
-        for policy in ("no_intervention", "local_llm"):
-            spec = base.model_copy(update={"seed": seed})
-            directory = root / f"seed-{seed}-{policy}"
-            started = time.monotonic()
-            state = run(
-                spec,
-                directory,
-                gateway=(
-                    NoInterventionBaseline() if policy == "no_intervention" else gateway
-                ),
-            )
-            wall = time.monotonic() - started
-            events = [
-                json.loads(line)
-                for line in (directory / "events.jsonl")
-                .read_text(encoding="utf-8")
-                .splitlines()
-            ]
-            agent_calls = [
-                e["metadata"]
-                for e in events
-                if "metadata" in e and e["metadata"].get("attempts", 0)
-            ]
-            row = {
-                "seed": seed,
-                "policy": policy,
-                "status": state["status"],
-                "epoch": state["epoch"],
-                "best_accuracy": state["best_accuracy"],
-                "worker_seconds": state["budget"]["consumed"],
-                "llm_seconds": sum(m.get("latency_seconds", 0) for m in agent_calls),
-                "llm_calls": len(agent_calls),
-                "wall_seconds": wall,
-                "model": spec.model_id if policy == "local_llm" else None,
-                "manifest": json.loads(
-                    (directory / "dataset_manifest.json").read_text()
-                ),
-            }
-            rows.append(row)
-            report = {
-                "runs": rows,
-                "config": base.model_dump(),
-                "seeds": args.seeds,
-                "limitations": "Small paired pilot, not a statistical efficacy claim. Same per-run training-worker budget and epoch cap; LLM/control/trial wall times reported separately, not matched total-compute experiments. Cloud comparison not run.",
-            }
-            (root / "pilot.json").write_text(
-                json.dumps(report, indent=2), encoding="utf-8"
-            )
-            print(
-                json.dumps({k: v for k, v in row.items() if k != "manifest"}),
-                flush=True,
-            )
+    with Capture(args.output, gateway, args.config, {"kind": "paired_training_pilot", "seeds": args.seeds, "max_epochs": base.max_epochs, "train_samples": base.train_samples, "val_samples": base.val_samples}) as capture:
+        root = capture.directory
+        rows = []
+        for seed in args.seeds:
+            for policy in ("no_intervention", "local_llm"):
+                spec = base.model_copy(update={"seed": seed})
+                directory = root / f"seed-{seed}-{policy}"
+                started = time.monotonic()
+                state = run(
+                    spec,
+                    directory,
+                    gateway=(
+                        NoInterventionBaseline() if policy == "no_intervention" else gateway
+                    ),
+                )
+                wall = time.monotonic() - started
+                events = [
+                    json.loads(line)
+                    for line in (directory / "events.jsonl")
+                    .read_text(encoding="utf-8")
+                    .splitlines()
+                ]
+                row = {
+                    "seed": seed,
+                    "policy": policy,
+                    "status": state["status"],
+                    "epoch": state["epoch"],
+                    "best_accuracy": state["best_accuracy"],
+                    "worker_seconds": state["budget"]["consumed"],
+                **summarize_agent_costs(events),
+                    "wall_seconds": wall,
+                    "model": spec.model_id if policy == "local_llm" else None,
+                    "manifest": json.loads(
+                        (directory / "dataset_manifest.json").read_text()
+                    ),
+                }
+                rows.append(row)
+                report = {
+                    "runs": rows,
+                    "config": base.model_dump(),
+                    "seeds": args.seeds,
+                    "limitations": "Small paired pilot, not a statistical efficacy claim. Same per-run training-worker budget and epoch cap; LLM/control/trial wall times reported separately, not matched total-compute experiments. Cloud comparison not run.",
+                }
+                (root / "pilot.json").write_text(
+                    json.dumps(report, indent=2), encoding="utf-8"
+                )
+                print(
+                    json.dumps({k: v for k, v in row.items() if k != "manifest"}),
+                    flush=True,
+                )
+
 
 
 if __name__ == "__main__":

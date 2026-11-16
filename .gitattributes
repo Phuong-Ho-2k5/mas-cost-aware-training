@@ -1,0 +1,4 @@
+# WSL executes shell scripts from the Windows checkout.
+*.sh text eol=lf
+# Runtime qualification compares the lock file's exact SHA256.
+requirements-vllm.lock text eol=lf

@@ -1,0 +1,26 @@
+[
+  {
+    "id": "p-recovery-unstable", "role": "planner", "scenario": "unstable", "expected": "NONEMPTY",
+    "diagnosis": {"status": "DIAGNOSED", "mode": "local", "hypotheses": [{"hypothesis_id": "observed", "cause": "Loss and gradients rise sharply; the learning step may be unstable.", "evidence_epochs": [3, 4], "confidence": 0.7}], "reason": "Loss rises from 1 to 4; accuracy falls from 0.5 to 0.1."}
+  },
+  {
+    "id": "p-recovery-rising", "role": "planner", "scenario": "rising_loss", "expected": "NONEMPTY",
+    "diagnosis": {"status": "DIAGNOSED", "mode": "local", "hypotheses": [{"hypothesis_id": "observed", "cause": "The rising loss may reflect updates that overshoot a useful region.", "evidence_epochs": [3, 4], "confidence": 0.7}], "reason": "Loss rises from 1.2 to 2.5; accuracy falls from 0.4 to 0.2."}
+  },
+  {
+    "id": "p-recovery-decay", "role": "planner", "scenario": "decay", "expected": "NONEMPTY",
+    "diagnosis": {"status": "DIAGNOSED", "mode": "local", "hypotheses": [{"hypothesis_id": "observed", "cause": "Limited progress may reflect excessive regularization; this remains a hypothesis.", "evidence_epochs": [3, 4], "confidence": 0.6}], "reason": "Loss stays near 2.3 and validation accuracy stays near 0.1."}
+  },
+  {
+    "id": "p-recovery-healthy", "role": "planner", "scenario": "noop", "expected": "EMPTY",
+    "diagnosis": {"status": "ABSTAIN", "mode": "local", "hypotheses": [], "reason": "Loss decreases and validation accuracy improves."}
+  },
+  {
+    "id": "p-recovery-disabled", "role": "planner", "scenario": "empty", "expected": "EMPTY"
+  },
+  {
+    "id": "p-recovery-budget", "role": "planner", "scenario": "unstable", "expected": "EMPTY",
+    "remaining_epochs": 8, "remaining_budget_seconds": 1.0,
+    "diagnosis": {"status": "DIAGNOSED", "mode": "local", "hypotheses": [{"hypothesis_id": "observed", "cause": "The learning step may be unstable.", "evidence_epochs": [3, 4], "confidence": 0.7}], "reason": "Loss and gradients rise while accuracy falls."}
+  }
+]

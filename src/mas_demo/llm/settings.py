@@ -1,6 +1,7 @@
 """Provider configuration; credentials never become part of a TaskSpec snapshot."""
 import math
 import os
+from pathlib import Path
 from urllib.parse import urlsplit
 
 from mas_demo.llm.gateway import OpenAICompatibleGateway
@@ -13,6 +14,9 @@ def create_gateway(spec):
             raise ValueError("OPENROUTER_API_KEY is required for the OpenRouter backend")
         return OpenAICompatibleGateway(key, spec.model_id)
     url = os.environ.get("LLM_BASE_URL", "http://127.0.0.1:8000/v1").rstrip("/")
+    backend = os.environ.get("LLM_LOCAL_BACKEND", "vllm").strip()
+    if backend not in ("bundled", "vllm"):
+        raise ValueError("LLM_LOCAL_BACKEND must be bundled or vllm")
     parsed = urlsplit(url)
     if parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
         raise ValueError("LLM_BASE_URL must be an HTTP(S) URL without credentials, query or fragment")
@@ -25,4 +29,7 @@ def create_gateway(spec):
     except ValueError:
         raise ValueError("LLM timeout/deadline must be positive finite seconds; output tokens must be 1..2048") from None
     return OpenAICompatibleGateway(os.environ.get("LLM_API_KEY", "").strip(), spec.model_id,
-        base_url=url, timeout=timeout, deadline=deadline, mode="local", attempts=1, max_tokens=max_tokens)
+        base_url=url, timeout=timeout, deadline=deadline, mode="local", attempts=1, max_tokens=max_tokens,
+        local_backend=backend, runtime_manifest=os.environ.get("LLM_RUNTIME_MANIFEST") or (
+            str(Path(__file__).resolve().parents[3] / "tmp/vllm/runtime-manifest.json")
+            if backend == "vllm" else None))
