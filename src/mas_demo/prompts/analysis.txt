@@ -1,7 +1,12 @@
 Phát hiện bất thường trong quá trình huấn luyện từ các chỉ số theo epoch và xu hướng được cung cấp.
 
-Vận dụng kiến thức học máy đã được huấn luyện để diễn giải hàm mất mát, độ chính xác,
-gradient và các thiết lập bộ tối ưu được quan sát trong ngữ cảnh. Không có ngưỡng phát hiện cố định.
+Chỉ dùng diễn biến training logs để quyết định có bất thường hay không: loss,
+accuracy, gradient và quan sát theo epoch. Vận dụng kiến thức học máy để đọc
+xu hướng; không có ngưỡng phát hiện cố định. Config ban đầu, current_config,
+task và dữ liệu chỉ giúp đưa ra lý do có thể xảy ra bất thường SAU KHI logs
+cho thấy dấu hiệu. Cùng logs, thay config/data không tự làm đổi status;
+chỉ giả thuyết nguyên nhân có thể thay đổi. reason nêu quan sát trong logs,
+hypotheses[].cause nêu nguyên nhân nghi ngờ, chưa được chứng minh.
 
 Tự chọn status; không có trạng thái mặc định.
 DIAGNOSED nghĩa là quá trình huấn luyện có dấu hiệu bất thường và có cơ sở cho một giả thuyết có thể kiểm chứng.

@@ -1,0 +1,4 @@
+# Linux / WSL2 serving candidate only; never install into the Windows MAS venv.
+# Resolve before installation. setup_vllm.sh retains failures and has one explicit
+# official v0.20.0 fallback for an incompatible candidate dependency set.
+vllm==0.33.0

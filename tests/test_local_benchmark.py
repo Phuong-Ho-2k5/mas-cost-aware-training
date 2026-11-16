@@ -1,6 +1,53 @@
 import json
+import pytest
 
 from mas_demo.contracts import TaskSpec
+
+
+def test_planner_fixture_can_supply_diagnosis_and_resource_limits(provider):
+    from mas_demo.llm.benchmark import run_case
+
+    gateway, state = provider
+    diagnosis = {"status": "ABSTAIN", "mode": "local", "hypotheses": [], "reason": "Logs improve"}
+    record = run_case({"id": "fixture", "role": "planner", "scenario": "unstable", "expected": "EMPTY",
+                       "diagnosis": diagnosis, "remaining_epochs": 2, "remaining_budget_seconds": 1.0},
+                      TaskSpec(), gateway)
+    payload = state["requests"][-1][1]
+    assert payload["diagnosis"] == diagnosis
+    assert payload["remaining_epochs"] == 2
+    assert payload["remaining_budget_seconds"] == 1.0
+    assert "expected" not in payload
+    assert record["diagnosis_source"] == "fixture"
+
+
+@pytest.mark.parametrize("expected,correct", [("NONEMPTY", False), ("EMPTY", True), ("VALID", True)])
+def test_empty_planner_result_does_not_satisfy_a_nonempty_expectation(provider, expected, correct):
+    from mas_demo.llm.benchmark import run_case
+
+    gateway, _ = provider
+    record = run_case({"id": "empty", "role": "planner", "scenario": "unstable", "expected": expected},
+                      TaskSpec(), gateway)
+    assert record["semantic_valid"] and record["actual"] == "EMPTY"
+    assert record["correct"] is correct
+
+
+def test_planner_outcomes_keep_rejections_and_truncation_visible():
+    from mas_demo.llm.benchmark import summarize
+
+    rows = [
+        {"actual": "NONEMPTY", "semantic_valid": True},
+        {"actual": "EMPTY", "semantic_valid": True},
+        {"actual": "INVALID", "validation_error": {"code": "NO_OP"}},
+        {"actual": "INVALID", "validation_error": {"code": "INSUFFICIENT_BUDGET"}},
+        {"actual": "INVALID", "finish_reason": "length"},
+    ]
+    rows = [dict(role="planner", latency_seconds=1, **row) for row in rows]
+    rows.append(dict(role="analysis", actual="ABSTAIN", semantic_valid=True, latency_seconds=1))
+    report = summarize(rows)
+    assert report["planner_outcomes"] == {
+        "count": 5, "valid_nonempty_count": 1, "valid_empty_count": 1,
+        "noop_count": 1, "budget_rejected_count": 1, "truncated_count": 1}
+    assert not report["quality_thresholds_met"]
 
 
 def test_authored_analysis_and_planner_cases_have_distinct_inputs():

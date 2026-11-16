@@ -19,7 +19,7 @@ def test_local_config_needs_no_openrouter_key(monkeypatch):
     spec = TaskSpec(analysis_mode="local")
     gateway = factory()(spec)
     assert gateway.mode == "local"
-    assert gateway.model == "Qwen/Qwen2.5-0.5B-Instruct"
+    assert gateway.model == "Qwen/Qwen3.5-0.8B"
     assert gateway.base_url == "http://127.0.0.1:8000/v1"
     assert gateway.attempts == 1
     assert gateway.timeout == 120 and gateway.deadline == 130

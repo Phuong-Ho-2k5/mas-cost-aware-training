@@ -79,7 +79,7 @@ class TaskSpec(Record):
     window: int = Field(5, ge=1, le=8)
     unit_guard_seconds: float = Field(0.2, gt=0)
     analysis_mode: Literal["openrouter", "local"] = "local"
-    model_id: str = "Qwen/Qwen2.5-0.5B-Instruct"
+    model_id: str = "Qwen/Qwen3.5-0.8B"
 
     @model_validator(mode="before")
     @classmethod
