@@ -38,7 +38,6 @@ class Capture:
         self.gateway = gateway
         fixture = Path(fixture) if fixture else ROOT / "tests/fixtures/config_agent_cases.json"
         sources = list((ROOT / "src/mas_demo").rglob("*.py")) + list((ROOT / "src/mas_demo/prompts").glob("*.txt"))
-        sources += list((ROOT / "services/local_llm").glob("*.py"))
         sources += [ROOT / "scripts" / name for name in ("benchmark_local_agents.py", "benchmark_config_agent.py", "check_local_agents.py", "compare_local_training.py")]
         self.manifest = {"schema_version": 1, "state": "running", "model": gateway.model,
             "backend": gateway.local_backend, "endpoint": gateway.base_url,
@@ -52,12 +51,10 @@ class Capture:
             response.raise_for_status()
             self.health = response.json() if response.content else {}
         self.manifest["health"] = self.health
-        self.runtime = None
-        if gateway.local_backend == "vllm":
-            from mas_demo.llm.health import verify_vllm_runtime
-            self.manifest["verified_runtime"] = verify_vllm_runtime(gateway)
-            self.runtime = json.loads(Path(gateway.runtime_manifest).read_text(encoding="utf-8"))
-            write_json(self.directory / "runtime-manifest.json", self.runtime)
+        from mas_demo.llm.health import verify_vllm_runtime
+        self.manifest["verified_runtime"] = verify_vllm_runtime(gateway)
+        self.runtime = json.loads(Path(gateway.runtime_manifest).read_text(encoding="utf-8"))
+        write_json(self.directory / "runtime-manifest.json", self.runtime)
         write_json(self.directory / "manifest.json", self.manifest)
         self.samples, self.stop = [], threading.Event()
         self.thread = threading.Thread(target=self.sample, daemon=True)
@@ -86,8 +83,6 @@ assert ticks==m['start_ticks'] and Path('/proc/sys/kernel/random/boot_id').read_
 print(json.dumps({'rss_mib':sum(x.memory_info().rss for x in [p,*p.children(recursive=True)])/1024**2}))'''
                     result = subprocess.run(["wsl.exe", "-d", "MAS-vLLM", "-u", "root", "--exec", "/opt/mas-vllm/venv/bin/python", "-c", code], input=json.dumps(self.runtime["process"]), capture_output=True, text=True, timeout=5, check=True, **flags)
                     row["server_tree_rss_mib"] = json.loads(result.stdout)["rss_mib"]
-                elif self.health.get("pid"):
-                    row["server_tree_rss_mib"] = psutil.Process(self.health["pid"]).memory_info().rss / 1024**2
             except (OSError, ValueError, subprocess.SubprocessError, psutil.Error):
                 row["rss_unavailable"] = True
             self.samples.append(row)

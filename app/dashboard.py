@@ -127,7 +127,7 @@ def monitor():
     evaluations = [e for e in events if e["kind"] == "evaluation"]
     with st.expander(
         "LLM: output và lần gọi của từng agent",
-        expanded=state["analysis_mode"] in ("openrouter", "local"),
+        expanded=state["analysis_mode"] == "vllm",
     ):
         st.caption(
             "Chỉ hiển thị các bước đã chạy. Run cũ có thể chưa có log Planner/Evaluation."

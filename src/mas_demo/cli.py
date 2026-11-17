@@ -30,6 +30,9 @@ def load_environment(path=None):
 
 
 def migrate_legacy_config(values):
+    # Explicit export only: never rewrite saved run artifacts or resume them silently.
+    if values.get("analysis_mode") in ("local", "openrouter"):
+        values = {**values, "analysis_mode": "vllm", "model_id": TaskSpec().model_id}
     if values.get("schema_version") == 3:
         return TaskSpec.model_validate(values)
     if values.get("fault_epoch") is not None:
@@ -73,7 +76,7 @@ def main():
         if name != "prepare":
             cmd.add_argument("--output")
         if name == "run":
-            cmd.add_argument("--analysis", choices=["local", "openrouter"])
+            cmd.add_argument("--analysis", choices=["vllm"])
             cmd.add_argument("--model")
     for name in ("resume", "stop"):
         commands.add_parser(name).add_argument("output")
@@ -93,7 +96,7 @@ def main():
             encoding="utf-8",
         )
         print(
-            f"Migrated initial settings to {target}; old action menus and horizons were discarded."
+            f"Migrated initial settings to {target}; removed providers use the default vLLM model, and old action menus and horizons were discarded."
         )
         return
     if args.command == "stop":

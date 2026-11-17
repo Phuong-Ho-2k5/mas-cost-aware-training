@@ -1,6 +1,6 @@
 import os
 from mas_demo.contracts import EvalVerdict, EvaluationResponse
-from mas_demo.llm.gateway import OpenRouterGateway, GatewayError, failure_metadata
+from mas_demo.llm.gateway import GatewayError, failure_metadata
 from mas_demo.llm.settings import create_gateway
 from mas_demo.prompts import load_prompt
 

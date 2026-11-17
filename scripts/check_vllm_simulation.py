@@ -23,7 +23,7 @@ from mas_demo.agents.planner import plan_with_agent
 from mas_demo.agents.evaluation import evaluate_with_agent
 from mas_demo.configuration import training_capabilities
 from mas_demo.contracts import EvidenceWindow, TaskSpec
-from mas_demo.llm.gateway import GatewayError, OpenAICompatibleGateway
+from mas_demo.llm.gateway import GatewayError, VLLMGateway
 from mas_demo.llm import health
 from vllm_simulation_process import OwnedSimulation
 
@@ -86,9 +86,9 @@ def main():
                                                     "structured_outputs_config": {"backend": "xgrammar", "disable_any_whitespace": True},
                                                     "provenance": "deliberately stubbed for HTTP fault injection"}
         model = "Qwen/Qwen3.5-0.8B"
-        gateway = OpenAICompatibleGateway("", model, url + "/v1", mode="local", local_backend="vllm",
+        gateway = VLLMGateway("", model, url + "/v1", mode="vllm", local_backend="vllm",
             attempts=1, timeout=0.25, deadline=2, max_tokens=64)
-        spec = TaskSpec(analysis_mode="local", model_id=model)
+        spec = TaskSpec(analysis_mode="vllm", model_id=model)
         evidence = EvidenceWindow(epochs=[], branch_id="main", status="INSUFFICIENT")
         health.wait_for_server(gateway, timeout=1)
         result, meta = gateway.complete({})

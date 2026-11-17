@@ -34,9 +34,10 @@ def test_three_role_probe_honors_explicit_model_and_output(provider, tmp_path, m
     module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
     monkeypatch.setattr(module, "load_environment", lambda: None)
     monkeypatch.setenv("LLM_BASE_URL", upstream.base_url)
-    monkeypatch.setenv("LLM_LOCAL_BACKEND", "bundled")
+    monkeypatch.setenv("LLM_LOCAL_BACKEND", "vllm")
     output = tmp_path / "probe"
     state["served_models"] = ["candidate-model"]
+    state["response_model"] = "candidate-model"
     monkeypatch.setattr(sys, "argv", [str(path), "--model", "candidate-model", "--output", str(output)])
     module.main()
     assert len(state["requests"]) == 3
@@ -58,7 +59,7 @@ def test_benchmark_distinguishes_initial_from_repaired_output(provider, monkeypa
         return original(payload)
     monkeypatch.setattr(gateway, "complete", complete)
     record = run_case({"id": "repair", "role": "analysis", "scenario": "unstable", "expected": "ABSTAIN"}, TaskSpec(), gateway)
-    assert record["initial_schema_valid"] is True
+    assert record["initial_schema_valid"] is False
     assert record["initial_semantic_valid"] is False
     assert record["semantic_valid"] is True and record["repair_attempted"]
 
@@ -106,8 +107,8 @@ def test_pilot_accounts_for_zero_attempt_failed_invocations():
     spec = importlib.util.spec_from_file_location("pilot_accounting", path)
     module = importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
     events = [
-        {"kind":"diagnosis","metadata":{"agent":"analysis","mode":"local","attempts":0,"latency_seconds":5,"error":"preflight"}},
-        {"kind":"planning","metadata":{"agent":"planner","mode":"local","attempts":1,"latency_seconds":3}},
+        {"kind":"diagnosis","metadata":{"agent":"analysis","mode":"vllm","attempts":0,"latency_seconds":5,"error":"preflight"}},
+        {"kind":"planning","metadata":{"agent":"planner","mode":"vllm","attempts":1,"latency_seconds":3}},
         {"kind":"diagnosis","metadata":{"agent":"analysis","mode":"disabled_baseline","attempts":0,"latency_seconds":0}},
     ]
     assert module.summarize_agent_costs(events) == {"llm_seconds":8,"llm_calls":2,"llm_http_attempts":1}

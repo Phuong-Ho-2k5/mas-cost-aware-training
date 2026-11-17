@@ -32,20 +32,20 @@ def test_local_factory_defaults_to_verified_vllm_without_cloud_key(monkeypatch):
     assert Path(gateway.runtime_manifest).resolve() == ROOT / "tmp/vllm/runtime-manifest.json"
 
 
-def test_saved_old_model_remains_explicit_and_legacy_backend_supported(monkeypatch):
-    saved = json.dumps({"analysis_mode": "local", "model_id": OLD})
+def test_explicit_model_is_not_replaced_when_using_vllm(monkeypatch):
+    saved = json.dumps({"analysis_mode": "vllm", "model_id": OLD})
     spec = TaskSpec.model_validate_json(saved)
-    monkeypatch.setenv("LLM_LOCAL_BACKEND", "bundled")
+    monkeypatch.setenv("LLM_LOCAL_BACKEND", "vllm")
     gateway = create_gateway(spec)
     assert spec.model_id == gateway.model == OLD
-    assert gateway.local_backend == "bundled"
+    assert gateway.local_backend == "vllm"
     assert TaskSpec.model_validate_json(spec.model_dump_json()).model_id == OLD
 
 
 def test_old_run_readiness_cannot_silently_use_new_model(provider, monkeypatch):
     upstream, state = provider
     state["served_models"] = [NEW]
-    monkeypatch.setenv("LLM_LOCAL_BACKEND", "bundled")
+    monkeypatch.setenv("LLM_LOCAL_BACKEND", "vllm")
     monkeypatch.setenv("LLM_BASE_URL", upstream.base_url)
     gateway = create_gateway(TaskSpec(model_id=OLD))
     with pytest.raises(RuntimeError, match="not serve"):
@@ -72,9 +72,10 @@ def test_probe_and_benchmark_model_defaults_and_overrides(monkeypatch, tmp_path,
     assert captured[0].model_id == (override or NEW)
 
 
-def test_env_example_uses_vllm_but_keeps_legacy_launcher_model():
+def test_env_example_exposes_only_vllm_runtime_settings():
     values = dotenv_values(ROOT / ".env.example")
-    assert values["LLM_LOCAL_BACKEND"] == "vllm"
+    assert "LLM_LOCAL_BACKEND" not in values
     assert values["LLM_BASE_URL"] == "http://127.0.0.1:8000/v1"
     assert values["LLM_RUNTIME_MANIFEST"] == "tmp/vllm/runtime-manifest.json"
-    assert values["LOCAL_LLM_MODEL"] == OLD
+    assert "LOCAL_LLM_MODEL" not in values
+    assert "OPENROUTER_API_KEY" not in values

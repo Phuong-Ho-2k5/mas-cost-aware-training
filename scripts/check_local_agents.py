@@ -15,7 +15,7 @@ def main():
     parser.add_argument("--model", default="Qwen/Qwen3.5-0.8B")
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
-    spec = TaskSpec(analysis_mode="local", model_id=args.model)
+    spec = TaskSpec(analysis_mode="vllm", model_id=args.model)
     gateway = create_gateway(spec)
     wait_for_server(gateway)
     records = []

@@ -2,6 +2,7 @@ import asyncio
 import json
 import time
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 import httpx
 from pydantic import ValidationError
 from jsonschema import (
@@ -25,17 +26,18 @@ class ResponsePayload(Record):
     reason: str
 
 
-def response_schema(role, response_type, mode="openrouter", max_trials=None, payload=None):
+def response_schema(role, response_type, mode="vllm", max_trials=None, payload=None):
     """The exact schema sent to a provider, also used by benchmark scoring."""
     schema = response_type.model_json_schema()
-    if mode == "local":
-        schema["properties"]["reason"]["maxLength"] = 160
-        if role == "analysis":
-            schema["properties"]["hypotheses"]["maxItems"] = 1
-            hypothesis = schema["$defs"]["AnalysisHypothesis"]["properties"]
-            hypothesis["cause"]["maxLength"] = 160
-            hypothesis["hypothesis_id"]["maxLength"] = 48
-            hypothesis["evidence_epochs"]["maxItems"] = 8
+    if mode != "vllm":
+        raise ValueError("Only vLLM response schemas are supported")
+    schema["properties"]["reason"]["maxLength"] = 160
+    if role == "analysis":
+        schema["properties"]["hypotheses"]["maxItems"] = 1
+        hypothesis = schema["$defs"]["AnalysisHypothesis"]["properties"]
+        hypothesis["cause"]["maxLength"] = 160
+        hypothesis["hypothesis_id"]["maxLength"] = 48
+        hypothesis["evidence_epochs"]["maxItems"] = 8
 
     if role == "planner":
         schema["properties"]["proposals"]["maxItems"] = (
@@ -58,28 +60,31 @@ def response_schema(role, response_type, mode="openrouter", max_trials=None, pay
     return schema
 
 
-class OpenAICompatibleGateway:
+class VLLMGateway:
     def __init__(
         self,
         key,
-        model="xingchen-agi/xing4.0-29b-a4b:free",
-        base_url="https://openrouter.ai/api/v1",
-        timeout=30,
+        model="Qwen/Qwen3.5-0.8B",
+        base_url="http://127.0.0.1:8000/v1",
+        timeout=120,
         retry_delay=1,
-        deadline=65,
-        mode="openrouter",
-        attempts=2,
-        max_tokens=2048,
-        local_backend="bundled",
+        deadline=130,
+        mode="vllm",
+        attempts=1,
+        max_tokens=1024,
+        local_backend="vllm",
         runtime_manifest=None,
     ):
-        if local_backend not in ("bundled", "vllm"):
-            raise ValueError("Unknown local backend; expected bundled or vllm")
+        if mode != "vllm" or local_backend != "vllm":
+            raise ValueError("Only the vLLM backend is supported")
         self.key, self.model = key, model
         self.base_url = base_url.rstrip("/")
         self.timeout, self.retry_delay, self.deadline = timeout, retry_delay, deadline
         self.mode, self.attempts, self.max_tokens = mode, attempts, max_tokens
-        self.local_backend, self.runtime_manifest = local_backend, runtime_manifest
+        self.local_backend = "vllm"
+        self.runtime_manifest = runtime_manifest or str(
+            Path(__file__).resolve().parents[3] / "tmp/vllm/runtime-manifest.json"
+        )
 
     def complete(self, evidence):
         payload, metadata = self.structured(
@@ -108,8 +113,6 @@ class OpenAICompatibleGateway:
                 raise GatewayError("Gateway absolute deadline exceeded") from None
 
         try:
-            if not self.key and self.mode == "openrouter":
-                raise GatewayError("OPENROUTER_API_KEY is not set")
             result = asyncio.run(bounded())
         except GatewayError as error:
             metadata["latency_seconds"] = time.monotonic() - started
@@ -119,40 +122,33 @@ class OpenAICompatibleGateway:
         return result, metadata
 
     async def _complete(self, role, payload, response_type, instruction, metadata):
-        vllm = self.mode == "local" and self.local_backend == "vllm"
-        if vllm:
-            from mas_demo.llm.health import verify_vllm_runtime
+        from mas_demo.llm.health import verify_vllm_runtime
 
-            # asyncio.run waits for its default executor on exit. A separate
-            # executor lets the absolute deadline return while the bounded,
-            # read-only WSL inspection finishes; it can never send a chat.
-            inspector = ThreadPoolExecutor(max_workers=1, thread_name_prefix="vllm-identity")
-            try:
-                metadata["server"] = await asyncio.get_running_loop().run_in_executor(
-                    inspector, verify_vllm_runtime, self
-                )
-                if metadata["server"].get("structured_outputs_config") != {"backend": "xgrammar", "disable_any_whitespace": True}:
-                    raise RuntimeError("Start vLLM with the updated launcher for compact structured JSON")
-            except RuntimeError as error:
-                raise GatewayError("vLLM runtime verification failed: " + str(error)) from None
-            finally:
-                inspector.shutdown(wait=False, cancel_futures=True)
+        # A separate executor keeps read-only WSL inspection within the deadline.
+        inspector = ThreadPoolExecutor(max_workers=1, thread_name_prefix="vllm-identity")
+        try:
+            metadata["server"] = await asyncio.get_running_loop().run_in_executor(
+                inspector, verify_vllm_runtime, self
+            )
+            if metadata["server"].get("structured_outputs_config") != {"backend": "xgrammar", "disable_any_whitespace": True}:
+                raise RuntimeError("Start vLLM with the updated launcher for compact structured JSON")
+        except RuntimeError as error:
+            raise GatewayError("vLLM runtime verification failed: " + str(error)) from None
+        finally:
+            inspector.shutdown(wait=False, cancel_futures=True)
         schema = response_schema(
-            role, response_type, self.mode, payload.get("max_trials"), payload=payload if vllm else None
+            role, response_type, self.mode, payload.get("max_trials"), payload=payload
         )
         schema_name = {
             "analysis": "training_diagnosis",
             "planner": "training_plan",
             "evaluation": "training_evaluation",
         }[role]
-        if self.mode == "local" and not (vllm and role == "planner"):
+        if role != "planner":
             instruction += load_prompt("local")
-        if vllm:
-            instruction += load_prompt("local_vllm_planner" if role == "planner" else "local_vllm")
-            system = instruction
-            metadata["response_schema"] = schema
-        else:
-            system = instruction + load_prompt("response_format") + json.dumps(schema)
+        instruction += load_prompt("local_vllm_planner" if role == "planner" else "local_vllm")
+        system = instruction
+        metadata["response_schema"] = schema
         body = {
             "model": self.model,
             "temperature": 0,
@@ -169,21 +165,15 @@ class OpenAICompatibleGateway:
                 "json_schema": {"name": schema_name, "strict": False, "schema": schema},
             },
         }
-        if vllm:
-            body["chat_template_kwargs"] = {"enable_thinking": False}
+        body["chat_template_kwargs"] = {"enable_thinking": False}
         started = time.monotonic()
         async with httpx.AsyncClient(trust_env=False) as client:
-            if self.mode == "local":
-                from mas_demo.llm.context import fit_local_context
+            from mas_demo.llm.context import fit_local_context
 
-                await fit_local_context(
-                    client,
-                    self.base_url,
-                    body,
-                    metadata,
-                    {"Authorization": "Bearer " + self.key} if self.key else {},
-                    backend=self.local_backend,
-                )
+            await fit_local_context(
+                client, self.base_url, body, metadata,
+                {"Authorization": "Bearer " + self.key} if self.key else {},
+            )
             for attempt in range(self.attempts):
                 metadata["attempts"] = attempt + 1
                 remaining = self.deadline - (time.monotonic() - started)
@@ -213,23 +203,6 @@ class OpenAICompatibleGateway:
                                 request_id=data.get("id"),
                                 usage=data.get("usage", {}),
                             )
-                            if not vllm and isinstance(data.get("local_metadata"), dict):
-                                metadata["server"] = {
-                                    name: data["local_metadata"][name]
-                                    for name in (
-                                        "revision",
-                                        "dtype",
-                                        "device",
-                                        "engine",
-                                        "context_tokens",
-                                        "load_seconds",
-                                        "torch_version",
-                                        "generation_seconds",
-                                        "rss_mb",
-                                        "peak_vram_mb",
-                                    )
-                                    if name in data["local_metadata"]
-                                }
                             choice = data["choices"][0]
                             content = choice["message"]["content"]
                             metadata["raw_output"] = (
@@ -238,9 +211,9 @@ class OpenAICompatibleGateway:
                                 else content
                             )
                             metadata["finish_reason"] = choice.get("finish_reason")
-                            if vllm and data.get("model") != self.model:
+                            if data.get("model") != self.model:
                                 raise GatewayError("Upstream model identity mismatch")
-                            if choice.get("finish_reason") not in (("stop",) if vllm else (None, "stop")):
+                            if choice.get("finish_reason") != "stop":
                                 raise ValueError("Incomplete or refused model output")
                             Draft202012Validator(schema).validate(json.loads(content))
                             result = response_type.model_validate_json(content)
@@ -323,7 +296,3 @@ def failure_metadata(error, agent, spec, metadata=None):
         **error.metadata,
         "error": str(error),
     }
-
-
-# Retain the public constructor used by existing scripts and saved tests.
-OpenRouterGateway = OpenAICompatibleGateway

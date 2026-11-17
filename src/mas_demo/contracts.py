@@ -78,7 +78,7 @@ class TaskSpec(Record):
     observation_interval: Literal[1] = 1
     window: int = Field(5, ge=1, le=8)
     unit_guard_seconds: float = Field(0.2, gt=0)
-    analysis_mode: Literal["openrouter", "local"] = "local"
+    analysis_mode: Literal["vllm"] = "vllm"
     model_id: str = "Qwen/Qwen3.5-0.8B"
 
     @model_validator(mode="before")
@@ -190,7 +190,7 @@ Hypothesis = AnalysisHypothesis
 
 class DiagnosisReport(Record):
     status: Literal["DIAGNOSED", "ABSTAIN"]
-    mode: Literal["openrouter", "local"]
+    mode: Literal["vllm"]
     hypotheses: list[AnalysisHypothesis] = Field(default_factory=list)
     reason: str = ""
 

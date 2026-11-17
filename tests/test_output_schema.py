@@ -26,7 +26,7 @@ def plan(payload, changes=None):
 
 
 def schema(payload):
-    return response_schema("planner", ConfigPlanResponse, "local", payload["max_trials"], payload=payload)
+    return response_schema("planner", ConfigPlanResponse, "vllm", payload["max_trials"], payload=payload)
 
 
 @pytest.mark.parametrize("changes", [
@@ -92,16 +92,15 @@ def test_planner_nested_text_has_a_generation_bound(field):
         Draft202012Validator(schema(payload)).validate(value)
 
 
-def test_planner_text_bounds_do_not_change_ungrounded_backends():
-    for mode in ("local", "openrouter"):
-        definitions = response_schema("planner", ConfigPlanResponse, mode)["$defs"]
-        assert "maxLength" not in definitions["ConfigPatch"]["properties"]["reason"]
-        assert "maxLength" not in definitions["ConfigProposal"]["properties"]["expected_effect"]
+def test_reference_schema_without_payload_remains_available_for_scoring():
+    definitions = response_schema("planner", ConfigPlanResponse)["$defs"]
+    assert "maxLength" not in definitions["ConfigPatch"]["properties"]["reason"]
+    assert "maxLength" not in definitions["ConfigProposal"]["properties"]["expected_effect"]
 
 
 def test_analysis_status_and_evidence_are_grounded():
     payload = {"evidence": {"epochs": [3, 4]}}
-    s = response_schema("analysis", ResponsePayload, "local", payload=payload)
+    s = response_schema("analysis", ResponsePayload, "vllm", payload=payload)
     good = {"status": "ABSTAIN", "hypotheses": [], "reason": "Observe"}
     Draft202012Validator(s).validate(good)
     bad = {**good, "status": "DIAGNOSED"}
@@ -113,10 +112,10 @@ def test_analysis_status_and_evidence_are_grounded():
 
 def test_evaluation_branches_follow_comparable_snapshots():
     payload = {"control": {"epoch": 4}, "trials": {"A": {"epoch": 4}}, "eligible_branches": ["A"]}
-    s = response_schema("evaluation", EvaluationResponse, "local", payload=payload)
+    s = response_schema("evaluation", EvaluationResponse, "vllm", payload=payload)
     Draft202012Validator(s).validate({"decision": "PROMOTE", "selected_branch": "A", "reason": "Gain"})
     with pytest.raises(ValidationError):Draft202012Validator(s).validate({"decision": "KEEP_MAIN", "selected_branch": "A", "reason": "Keep"})
     payload["control"] = None
-    s = response_schema("evaluation", EvaluationResponse, "local", payload=payload)
+    s = response_schema("evaluation", EvaluationResponse, "vllm", payload=payload)
     with pytest.raises(ValidationError):Draft202012Validator(s).validate({"decision": "KEEP_MAIN", "selected_branch": "main", "reason": "Keep"})
     Draft202012Validator(s).validate({"decision": "INCONCLUSIVE", "selected_branch": "main", "reason": "No control"})

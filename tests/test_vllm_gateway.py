@@ -6,6 +6,7 @@ import json
 import subprocess
 import time
 from types import SimpleNamespace
+from urllib.parse import urlsplit
 
 import httpx
 import pytest
@@ -13,7 +14,7 @@ import pytest
 from mas_demo.contracts import EvidenceWindow, TaskSpec
 from mas_demo.llm import health
 from mas_demo.llm.context import fit_local_context
-from mas_demo.llm.gateway import GatewayError, OpenAICompatibleGateway
+from mas_demo.llm.gateway import GatewayError, VLLMGateway
 from mas_demo.llm.settings import create_gateway
 
 MODEL = "Qwen/Qwen3.5-0.8B"
@@ -62,13 +63,13 @@ def live_manifest(tmp_path):
 def candidate(provider, live_manifest, monkeypatch):
     upstream, state = provider
     path, manifest, observation, save = live_manifest
-    port = int(upstream.base_url.rsplit(":", 1)[1])
+    port = urlsplit(upstream.base_url).port
     manifest["profile"]["port"] = port
     for args in (manifest["process"]["effective_argv"], observation["effective_argv"]):
         args[args.index("--port") + 1] = str(port)
     save()
     monkeypatch.setattr(health, "_inspect_vllm_process", lambda pid, port: observation, raising=False)
-    gateway = OpenAICompatibleGateway("", MODEL, upstream.base_url + "/v1", mode="local",
+    gateway = VLLMGateway("", MODEL, upstream.base_url, mode="vllm",
         attempts=1, local_backend="vllm", runtime_manifest=str(path), max_tokens=1024)
     state.update(token_context=4096, response_model=MODEL)
     state["responses"]["training_diagnosis"] = {"status": "ABSTAIN", "hypotheses": [], "reason": "Observe"}
@@ -80,10 +81,10 @@ def test_vllm_uses_shared_gateway_without_cloud_key(monkeypatch):
     monkeypatch.setenv("LLM_LOCAL_BACKEND", "vllm")
     monkeypatch.setenv("LLM_BASE_URL", "http://127.0.0.1:8001/v1")
     monkeypatch.setenv("LLM_RUNTIME_MANIFEST", "D:/runtime.json")
-    spec = TaskSpec(analysis_mode="local", model_id=MODEL)
+    spec = TaskSpec(analysis_mode="vllm", model_id=MODEL)
     gateway = create_gateway(spec)
-    assert type(gateway) is OpenAICompatibleGateway
-    assert (gateway.mode, gateway.local_backend, gateway.model) == ("local", "vllm", MODEL)
+    assert type(gateway) is VLLMGateway
+    assert (gateway.mode, gateway.local_backend, gateway.model) == ("vllm", "vllm", MODEL)
     assert gateway.base_url == "http://127.0.0.1:8001/v1"
     assert gateway.runtime_manifest == "D:/runtime.json"
     assert (gateway.attempts, gateway.timeout, gateway.deadline) == (1, 120, 130)
@@ -93,9 +94,9 @@ def test_vllm_uses_shared_gateway_without_cloud_key(monkeypatch):
 def test_unknown_local_backend_rejected(monkeypatch):
     monkeypatch.setenv("LLM_LOCAL_BACKEND", "typo")
     with pytest.raises(ValueError, match="backend|BACKEND"):
-        create_gateway(TaskSpec(analysis_mode="local"))
+        create_gateway(TaskSpec(analysis_mode="vllm"))
     with pytest.raises(ValueError, match="backend|BACKEND"):
-        OpenAICompatibleGateway("", local_backend="typo")
+        VLLMGateway("", local_backend="typo")
 
 
 def test_only_vllm_receives_non_thinking_kwargs(candidate, provider):
@@ -106,10 +107,6 @@ def test_only_vllm_receives_non_thinking_kwargs(candidate, provider):
     assert chat["chat_template_kwargs"] == {"enable_thinking": False}
     assert token == {**{k: chat[k] for k in ("model", "messages", "response_format", "chat_template_kwargs")},
                      "add_generation_prompt": True, "add_special_tokens": False}
-    upstream, _ = provider
-    for mode in ("local", "openrouter"):
-        OpenAICompatibleGateway("key", base_url=upstream.base_url, mode=mode).complete({})
-        assert "chat_template_kwargs" not in state["requests"][-1][2]
 
 
 @pytest.mark.parametrize("status,counts", [
@@ -322,7 +319,7 @@ def test_three_agents_use_one_verified_vllm_gateway(candidate):
     from mas_demo.contracts import EpochEvent
 
     gateway, state, *_ = candidate
-    spec = TaskSpec(analysis_mode="local", model_id=MODEL)
+    spec = TaskSpec(analysis_mode="vllm", model_id=MODEL)
     evidence = EvidenceWindow(epochs=[1, 2], branch_id="main", status="READY")
     state["responses"]["training_diagnosis"] = {"status": "DIAGNOSED", "hypotheses": [
         {"hypothesis_id": "h1", "cause": "Loss unstable", "confidence": 0.6, "evidence_epochs": [1, 2]}], "reason": "Test"}
@@ -401,7 +398,3 @@ def test_only_vllm_requests_compact_json_to_prevent_whitespace_loops(candidate, 
     _, metadata = gateway.complete({})
     assert "structured_outputs" not in state["requests"][-1][2]
     assert metadata["server"]["structured_outputs_config"] == {"backend": "xgrammar", "disable_any_whitespace": True}
-    upstream, _ = provider
-    for mode in ("local", "openrouter"):
-        OpenAICompatibleGateway("key", base_url=upstream.base_url, mode=mode).complete({})
-        assert "structured_outputs" not in state["requests"][-1][2]

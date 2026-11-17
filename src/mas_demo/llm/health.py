@@ -199,11 +199,9 @@ def wait_for_server(gateway, timeout=180, interval=1):
                     data = response.json()
                     if gateway.model not in {item["id"] for item in data["data"]}:
                         raise RuntimeError(f"Local endpoint does not serve model {gateway.model}")
-                    if gateway.mode == "local" and gateway.local_backend == "vllm":
-                        verify_vllm_runtime(gateway)
+                    verify_vllm_runtime(gateway)
                     return data
             except (httpx.TransportError, ValueError, KeyError, TypeError):
                 pass
             time.sleep(min(interval, max(0, deadline - time.monotonic())))
-    launcher = "scripts/start_vllm.ps1" if gateway.local_backend == "vllm" else "scripts/start_local_llm.ps1"
-    raise TimeoutError(f"Local LLM server is not ready; start {launcher} and inspect its log")
+    raise TimeoutError("vLLM server is not ready; start scripts/start_vllm.ps1 and inspect its log")
