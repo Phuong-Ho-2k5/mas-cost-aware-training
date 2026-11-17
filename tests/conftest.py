@@ -1,17 +1,34 @@
 """Local HTTP LLM provider shared by agent and training integration tests."""
 
 import json
+from pathlib import Path
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import pytest
-from mas_demo.llm.gateway import OpenRouterGateway
+from mas_demo.llm.gateway import VLLMGateway
 
 
 @pytest.fixture
-def provider(monkeypatch):
-    # This HTTP stand-in implements the bundled protocol, without a WSL runtime.
-    monkeypatch.setenv("LLM_LOCAL_BACKEND", "bundled")
-    state = {"requests": [], "responses": {}, "statuses": {}}
+def provider(monkeypatch, tmp_path):
+    # Real HTTP vLLM protocol; only this stand-in's process provenance is simulated.
+    from mas_demo.llm import health
+    monkeypatch.setenv("LLM_LOCAL_BACKEND", "vllm")
+    model = "Qwen/Qwen3.5-0.8B"
+    state = {"requests": [], "responses": {}, "statuses": {},
+             "token_context": 4096, "response_model": model, "served_models": [model]}
+    runtime_path = tmp_path / "http-standin-runtime.json"
+    runtime_path.write_text(json.dumps({"process": {}, "profile": {"model": model}}))
+    monkeypatch.setenv("LLM_RUNTIME_MANIFEST", str(runtime_path))
+    real_verify = health.verify_vllm_runtime
+    default_path = Path(__file__).resolve().parents[1] / "tmp/vllm/runtime-manifest.json"
+
+    def verify(gateway):
+        if gateway.runtime_manifest and Path(gateway.runtime_manifest) in (runtime_path, default_path):
+            return {"engine": "http-standin", "context_tokens": state["token_context"],
+                    "structured_outputs_config": {"backend": "xgrammar", "disable_any_whitespace": True}}
+        return real_verify(gateway)
+
+    monkeypatch.setattr(health, "verify_vllm_runtime", verify)
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
@@ -30,7 +47,7 @@ def provider(monkeypatch):
 
         def do_POST(self):
             request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-            if self.path == "/tokenize" or self.path.endswith("/token-count"):
+            if self.path == "/tokenize":
                 if self.path == "/tokenize":
                     state.setdefault("tokenize_requests", []).append(request)
                     if "tokenize_status" in state or "tokenize_response" in state:
@@ -39,10 +56,6 @@ def provider(monkeypatch):
                         self.end_headers()
                         self.wfile.write(json.dumps(state.get("tokenize_response", {})).encode())
                         return
-                if not state.get("token_context"):
-                    self.send_response(404)
-                    self.end_headers()
-                    return
                 payload = json.loads(request["messages"][1]["content"])
                 state.setdefault("token_requests", []).append(payload)
                 extra = 0
@@ -57,9 +70,7 @@ def provider(monkeypatch):
                 self.end_headers()
                 self.wfile.write(
                     json.dumps(
-                        ({"count": count, "max_model_len": state["token_context"]}
-                         if self.path == "/tokenize" else
-                         {"prompt_tokens": count, "context_tokens": state["token_context"]})
+                        {"count": count, "max_model_len": state["token_context"]}
                     ).encode()
                 )
                 return
@@ -96,6 +107,8 @@ def provider(monkeypatch):
                     "reason": "Compared validation snapshots",
                 },
             }
+            if not payload.get("evidence", {}).get("epochs"):
+                defaults["training_diagnosis"] = {"status": "ABSTAIN", "hypotheses": [], "reason": "No evidence"}
             content = state["responses"].get(role, defaults[role])
             self.send_response(state["statuses"].get(role, 200))
             self.send_header("Content-Type", "application/json")
@@ -122,8 +135,9 @@ def provider(monkeypatch):
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    gateway = OpenRouterGateway(
-        "local-key", base_url=f"http://127.0.0.1:{server.server_port}", retry_delay=0
+    gateway = VLLMGateway(
+        "local-key", base_url=f"http://127.0.0.1:{server.server_port}/v1", retry_delay=0,
+        runtime_manifest=str(runtime_path),
     )
     yield gateway, state
     server.shutdown()

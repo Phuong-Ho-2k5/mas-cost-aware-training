@@ -8,7 +8,7 @@ def test_planner_fixture_can_supply_diagnosis_and_resource_limits(provider):
     from mas_demo.llm.benchmark import run_case
 
     gateway, state = provider
-    diagnosis = {"status": "ABSTAIN", "mode": "local", "hypotheses": [], "reason": "Logs improve"}
+    diagnosis = {"status": "ABSTAIN", "mode": "vllm", "hypotheses": [], "reason": "Logs improve"}
     record = run_case({"id": "fixture", "role": "planner", "scenario": "unstable", "expected": "EMPTY",
                        "diagnosis": diagnosis, "remaining_epochs": 2, "remaining_budget_seconds": 1.0},
                       TaskSpec(), gateway)
@@ -60,7 +60,7 @@ def test_authored_analysis_and_planner_cases_have_distinct_inputs():
 
         def complete(self, payload):
             self.payload = payload
-            return DiagnosisReport(status="ABSTAIN", mode="local", reason="Observe"), {}
+            return DiagnosisReport(status="ABSTAIN", mode="vllm", reason="Observe"), {}
 
         def structured(self, role, payload, *args):
             self.payload = payload
@@ -146,7 +146,7 @@ def test_benchmark_measures_raw_invalid_output_as_failure(provider):
     assert record["raw_output"] == '{"not_a_diagnosis": true}'
 
 
-def test_benchmark_measures_valid_but_forbidden_actions(provider):
+def test_benchmark_measures_grounded_schema_rejection_as_failure(provider):
     from mas_demo.llm.benchmark import run_case
 
     gateway, state = provider
@@ -172,7 +172,7 @@ def test_benchmark_measures_valid_but_forbidden_actions(provider):
         TaskSpec(),
         gateway,
     )
-    assert record["schema_valid"] is True
+    assert record["schema_valid"] is False
     assert record["semantic_valid"] is False and record["correct"] is False
 
 
@@ -214,33 +214,42 @@ def test_report_does_not_hide_role_failures_or_transport_errors():
 
 
 def test_json_schema_success_does_not_hide_cross_field_validation_failure(provider):
+    from mas_demo.configuration import config_hash
     from mas_demo.llm.benchmark import run_case
 
     gateway, state = provider
-    state["responses"]["training_diagnosis"] = {
-        "status": "DIAGNOSED",
-        "hypotheses": [
+    spec = TaskSpec()
+    state["responses"]["training_plan"] = {
+        "proposals": [
             {
-                "hypothesis_id": "wrong",
-                "cause": "Loss unstable",
-                "evidence_epochs": [99],
-                "confidence": 0.5,
+                "proposal_id": "duplicate-id",
+                "hypothesis_id": "observed",
+                "patch": {
+                    "base_config_hash": config_hash(spec.training),
+                    "changes": {"learning_rate": lr},
+                    "evidence_epochs": [3, 4],
+                    "reason": "Compare",
+                },
+                "expected_effect": "Improve",
             }
+            for lr in (0.027, 0.043)
         ],
-        "reason": "Wrong operation",
+        "verification_epochs": 1,
+        "reason": "Compare",
     }
     record = run_case(
         {
             "id": "cross-field",
-            "role": "analysis",
-            "scenario": "unstable",
-            "expected": "DIAGNOSED",
+            "role": "planner",
+            "scenario": "two",
+            "expected": "NONEMPTY",
         },
-        TaskSpec(),
+        spec,
         gateway,
     )
     assert record["schema_valid"] is True
     assert record["semantic_valid"] is False and record["correct"] is False
+    assert record["validation_error"]["code"] == "DUPLICATE_ID"
 
 
 def test_three_successful_probes_cannot_pass_full_benchmark_gate():
@@ -263,7 +272,7 @@ def test_three_successful_probes_cannot_pass_full_benchmark_gate():
 
 def test_effective_local_schema_is_checked_when_provider_ignores_limits(provider):
     from mas_demo.llm.benchmark import run_case
-    from mas_demo.llm.gateway import OpenAICompatibleGateway
+    from mas_demo.llm.gateway import VLLMGateway
 
     upstream, state = provider
     state["responses"]["training_diagnosis"] = {
@@ -271,8 +280,8 @@ def test_effective_local_schema_is_checked_when_provider_ignores_limits(provider
         "hypotheses": [],
         "reason": "x" * 161,
     }
-    gateway = OpenAICompatibleGateway(
-        "", mode="local", attempts=1, base_url=upstream.base_url
+    gateway = VLLMGateway(
+        "", mode="vllm", attempts=1, base_url=upstream.base_url
     )
     record = run_case(
         {
@@ -281,7 +290,7 @@ def test_effective_local_schema_is_checked_when_provider_ignores_limits(provider
             "scenario": "insufficient",
             "expected": "ABSTAIN",
         },
-        TaskSpec(analysis_mode="local"),
+        TaskSpec(analysis_mode="vllm"),
         gateway,
     )
     assert record["schema_valid"] is False

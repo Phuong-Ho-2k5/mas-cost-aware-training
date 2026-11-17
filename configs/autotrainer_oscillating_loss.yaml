@@ -9,7 +9,7 @@ train_samples: 700
 val_samples: 300
 observation_interval: 1
 window: 5
-analysis_mode: local
+analysis_mode: vllm
 model_id: Qwen/Qwen3.5-0.8B
 training:
   optimizer: sgd

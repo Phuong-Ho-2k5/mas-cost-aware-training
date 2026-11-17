@@ -32,7 +32,7 @@ class ScriptedGateway:
         result = next(self.responses)
         if isinstance(result, Exception):
             raise result
-        return DiagnosisReport(mode="local", **result), {
+        return DiagnosisReport(mode="vllm", **result), {
             "attempts": 1,
             "latency_seconds": 2.5,
             "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
@@ -156,7 +156,7 @@ def test_repair_feedback_reaches_real_gateway(provider, monkeypatch):
 def test_optional_provider_usage_cannot_crash_valid_analysis(usage):
     class Gateway:
         def complete(self, payload):
-            return DiagnosisReport(mode="local", **output()), {"usage": usage}
+            return DiagnosisReport(mode="vllm", **output()), {"usage": usage}
 
     report, meta = run(Gateway())
     assert report.status == "DIAGNOSED" and meta["outcome"] == "valid"

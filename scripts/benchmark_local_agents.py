@@ -24,7 +24,7 @@ def main():
     args = parser.parse_args()
     if args.rounds < 1:
         parser.error("rounds must be positive")
-    spec = TaskSpec(analysis_mode="local", model_id=args.model)
+    spec = TaskSpec(analysis_mode="vllm", model_id=args.model)
     gateway = create_gateway(spec)
     wait_for_server(gateway)
     records = []
@@ -45,7 +45,7 @@ def main():
         report = {
             "schema_version": 3,
             "model": args.model,
-            "mode": "local",
+            "mode": "vllm",
             "rounds": args.rounds,
             "wall_seconds": time.monotonic() - started,
             **summarize(records),

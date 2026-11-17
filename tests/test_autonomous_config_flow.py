@@ -87,7 +87,7 @@ class Gateway:
         return (
             DiagnosisReport(
                 status="DIAGNOSED" if abnormal else "ABSTAIN",
-                mode="local",
+                mode="vllm",
                 hypotheses=(
                     [
                         Hypothesis(
@@ -260,7 +260,7 @@ def test_early_stopped_main_still_sends_its_final_epoch_to_analysis(tmp_path):
     class ObserveOnly(Gateway):
         def complete(self, payload):
             self.payloads.append(("analysis", payload))
-            return DiagnosisReport(status="ABSTAIN", mode="local", reason="Observe"), {}
+            return DiagnosisReport(status="ABSTAIN", mode="vllm", reason="Observe"), {}
 
     spec = TaskSpec(
         dataset="synthetic",

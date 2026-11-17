@@ -4,7 +4,7 @@ import pytest
 
 from mas_demo.contracts import TaskSpec, EvidenceWindow
 from mas_demo.agents.analysis import diagnose
-from mas_demo.llm.gateway import GatewayError, OpenRouterGateway
+from mas_demo.llm.gateway import GatewayError, VLLMGateway
 
 
 def factory():
@@ -16,9 +16,9 @@ def factory():
 def test_local_config_needs_no_openrouter_key(monkeypatch):
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     monkeypatch.setenv("LLM_BASE_URL", "http://127.0.0.1:8000/v1")
-    spec = TaskSpec(analysis_mode="local")
+    spec = TaskSpec(analysis_mode="vllm")
     gateway = factory()(spec)
-    assert gateway.mode == "local"
+    assert gateway.mode == "vllm"
     assert gateway.model == "Qwen/Qwen3.5-0.8B"
     assert gateway.base_url == "http://127.0.0.1:8000/v1"
     assert gateway.attempts == 1
@@ -26,43 +26,38 @@ def test_local_config_needs_no_openrouter_key(monkeypatch):
     assert "key" not in spec.model_dump()
 
 
-def test_old_config_keeps_openrouter_and_requires_key(monkeypatch):
-    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
-    with pytest.raises(ValueError, match="OPENROUTER_API_KEY"):
-        factory()(TaskSpec(analysis_mode="openrouter"))
+def test_removed_provider_cannot_be_selected_even_with_a_key(monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "private-key")
-    gateway = factory()(TaskSpec(analysis_mode="openrouter"))
-    assert gateway.mode == "openrouter" and gateway.attempts == 2
-    assert gateway.base_url == "https://openrouter.ai/api/v1"
-    assert gateway.model == TaskSpec().model_id
+    with pytest.raises(ValueError):
+        TaskSpec(analysis_mode="openrouter")
 
 
 def test_local_gateway_preserves_metadata_and_abstention(provider, monkeypatch):
     upstream, state = provider
     monkeypatch.setenv("LLM_BASE_URL", upstream.base_url)
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
-    gateway = factory()(TaskSpec(analysis_mode="local"))
+    gateway = factory()(TaskSpec(analysis_mode="vllm"))
     state["responses"]["training_diagnosis"] = {
         "status": "ABSTAIN",
         "hypotheses": [],
         "reason": "No evidence",
     }
     report, metadata = diagnose(
-        TaskSpec(analysis_mode="local"),
+        TaskSpec(analysis_mode="vllm"),
         EvidenceWindow(epochs=[], branch_id="main", status="INSUFFICIENT"),
         [],
         gateway,
     )
-    assert report.mode == metadata["mode"] == "local"
+    assert report.mode == metadata["mode"] == "vllm"
     assert report.status == "ABSTAIN"
     state["statuses"]["training_diagnosis"] = 503
     report, metadata = diagnose(
-        TaskSpec(analysis_mode="local"),
+        TaskSpec(analysis_mode="vllm"),
         EvidenceWindow(epochs=[], branch_id="main", status="INSUFFICIENT"),
         [],
         gateway,
     )
-    assert report.mode == metadata["mode"] == "local"
+    assert report.mode == metadata["mode"] == "vllm"
     assert report.status == "ABSTAIN" and metadata["attempts"] == 1
     assert len(state["requests"]) == 2
 
@@ -70,12 +65,12 @@ def test_local_gateway_preserves_metadata_and_abstention(provider, monkeypatch):
 def test_local_endpoint_validation(monkeypatch):
     monkeypatch.setenv("LLM_BASE_URL", "file:///tmp/model")
     with pytest.raises(ValueError, match="HTTP"):
-        factory()(TaskSpec(analysis_mode="local"))
+        factory()(TaskSpec(analysis_mode="vllm"))
 
 
 def test_explicit_model_and_config_snapshot_are_preserved(monkeypatch):
     monkeypatch.setenv("LLM_API_KEY", "server-secret")
-    spec = TaskSpec(analysis_mode="local", model_id="served-qwen")
+    spec = TaskSpec(analysis_mode="vllm", model_id="served-qwen")
     gateway = factory()(spec)
     assert gateway.model == "served-qwen"
     saved = spec.model_dump_json()
@@ -89,7 +84,7 @@ def test_local_cli_passes_key_gate_without_calling_cloud(tmp_path, monkeypatch, 
     monkeypatch.setattr(cli, "load_environment", lambda: None)
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     path = tmp_path / "local.yaml"
-    path.write_text("dataset: synthetic\ndevice: cpu\nanalysis_mode: local\n")
+    path.write_text("dataset: synthetic\ndevice: cpu\nanalysis_mode: vllm\n")
     monkeypatch.setattr(
         "sys.argv",
         ["mas-demo", "run", "--config", str(path), "--output", str(tmp_path / "run")],
@@ -102,7 +97,7 @@ def test_local_cli_passes_key_gate_without_calling_cloud(tmp_path, monkeypatch, 
 def test_truncated_output_never_becomes_a_decision(provider, monkeypatch):
     upstream, state = provider
     monkeypatch.setenv("LLM_BASE_URL", upstream.base_url)
-    gateway = factory()(TaskSpec(analysis_mode="local"))
+    gateway = factory()(TaskSpec(analysis_mode="vllm"))
     state["finish_reason"] = "length"
     state["responses"]["training_diagnosis"] = {
         "status": "ABSTAIN",
@@ -125,11 +120,11 @@ def test_direct_analysis_factory_uses_local_backend(provider, monkeypatch):
         "reason": "No evidence",
     }
     report, meta = diagnose(
-        TaskSpec(analysis_mode="local"),
+        TaskSpec(analysis_mode="vllm"),
         EvidenceWindow(epochs=[], branch_id="main", status="INSUFFICIENT"),
         [],
     )
-    assert report.mode == meta["mode"] == "local"
+    assert report.mode == meta["mode"] == "vllm"
 
 
 def test_readiness_checks_served_model_before_benchmark(provider):
@@ -155,8 +150,8 @@ def test_readiness_fails_with_bounded_wait_when_server_unavailable(provider):
 def test_local_generation_has_explicit_short_output_schema(provider, monkeypatch):
     upstream, state = provider
     monkeypatch.setenv("LLM_BASE_URL", upstream.base_url)
-    gateway = factory()(TaskSpec(analysis_mode="local"))
+    gateway = factory()(TaskSpec(analysis_mode="vllm"))
     gateway.complete({})
     schema = state["requests"][0][2]["response_format"]["json_schema"]["schema"]
-    assert schema["properties"]["reason"]["maxLength"] == 160
-    assert schema["properties"]["hypotheses"]["maxItems"] == 1
+    assert schema["anyOf"][0]["properties"]["reason"]["maxLength"] == 160
+    assert schema["anyOf"][0]["properties"]["hypotheses"]["maxItems"] == 0

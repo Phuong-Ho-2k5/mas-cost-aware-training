@@ -18,7 +18,7 @@ class NoInterventionBaseline:
 
     def complete(self, evidence):
         return DiagnosisReport(
-            status="ABSTAIN", mode="local", reason="Explicit no-intervention baseline"
+            status="ABSTAIN", mode="vllm", reason="Explicit no-intervention baseline"
         ), {
             "agent": "analysis",
             "mode": "disabled_baseline",

@@ -2,7 +2,7 @@ from mas_demo.contracts import TaskSpec, EvidenceWindow
 from mas_demo.agents.analysis import diagnose
 from mas_demo.agents.planner import plan_with_agent
 from mas_demo.configuration import training_capabilities
-from mas_demo.llm.gateway import OpenAICompatibleGateway
+from mas_demo.llm.gateway import VLLMGateway
 
 
 def test_context_budget_drops_optional_old_history_but_preserves_evidence(provider):
@@ -13,8 +13,8 @@ def test_context_budget_drops_optional_old_history_but_preserves_evidence(provid
         "hypotheses": [],
         "reason": "Observe",
     }
-    gateway = OpenAICompatibleGateway(
-        "", base_url=upstream.base_url, mode="local", attempts=1, max_tokens=1024
+    gateway = VLLMGateway(
+        "", base_url=upstream.base_url, mode="vllm", attempts=1, max_tokens=1024
     )
     evidence = EvidenceWindow(epochs=[1, 2, 3, 4, 5], branch_id="main", status="READY")
     history = [{"round_id": i, "config_hash": str(i)} for i in [1, 2, 3]]
@@ -37,8 +37,8 @@ def test_repair_can_reference_audited_previous_output_without_truncating_evidenc
         "verification_epochs": None,
         "reason": "Abstain",
     }
-    gateway = OpenAICompatibleGateway(
-        "", base_url=upstream.base_url, mode="local", attempts=1, max_tokens=1024
+    gateway = VLLMGateway(
+        "", base_url=upstream.base_url, mode="vllm", attempts=1, max_tokens=1024
     )
     spec = TaskSpec()
     evidence = EvidenceWindow(epochs=[1, 2, 3, 4, 5], branch_id="main", status="READY")
@@ -68,8 +68,8 @@ def test_repair_can_reference_audited_previous_output_without_truncating_evidenc
 def test_analysis_repair_reference_uses_analysis_instructions(provider, monkeypatch):
     upstream, state = provider
     state["token_context"] = 2500
-    gateway = OpenAICompatibleGateway(
-        "", base_url=upstream.base_url, mode="local", attempts=1, max_tokens=1024
+    gateway = VLLMGateway(
+        "", base_url=upstream.base_url, mode="vllm", attempts=1, max_tokens=1024
     )
     original = gateway.complete
 
@@ -100,5 +100,5 @@ def test_analysis_repair_reference_uses_analysis_instructions(provider, monkeypa
     assert repaired["evidence"] == evidence.model_dump(exclude={"signals"})
     assert "analysis" in repaired["previous_response"]["stored_in"]
     assert "diagnosis" in repaired["previous_response"]["instruction"]
-    assert repaired["validation_errors"][0]["code"] == "contradictory_status"
+    assert repaired["validation_errors"][0]["code"] == "invalid_schema"
     assert meta["calls"][1]["context_compaction"]["previous_response_referenced"]

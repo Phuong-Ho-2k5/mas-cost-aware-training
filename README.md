@@ -31,7 +31,7 @@ Terminal 3 — xem dashboard:
 Mở `http://localhost:8501` và chọn run vừa tạo. Dashboard chỉ đọc artifacts.
 Mỗi output directory dành cho một run; luôn dùng tên mới khi chạy lại.
 
-Backend local mặc định là **vLLM**, model **Qwen/Qwen3.5-0.8B**, API tại
+Backend duy nhất là **vLLM**, model **Qwen/Qwen3.5-0.8B**, API tại
 `http://127.0.0.1:8000/v1`. Server không có giao diện chat. Training kết thúc
 không tự tắt server; dừng bằng:
 
@@ -76,21 +76,17 @@ if (-not (Test-Path .env)) { Copy-Item .env.example .env }
 ```
 
 Chỉnh `.env` theo máy; file này được Git bỏ qua. Biến process có sẵn ưu tiên hơn
-`.env`. `model_id` nằm trong YAML và phải khớp model server; `LOCAL_LLM_MODEL`
-chỉ phục vụ launcher Transformers cũ.
+`.env`. YAML dùng `analysis_mode: vllm`; `model_id` mặc định là
+`Qwen/Qwen3.5-0.8B` và phải khớp model server.
 
 | Biến | Mặc định / mục đích |
 | --- | --- |
-| `LLM_LOCAL_BACKEND` | `vllm`; dùng `bundled` cho Transformers cũ. |
 | `LLM_BASE_URL` | `http://127.0.0.1:8000/v1`. |
 | `LLM_RUNTIME_MANIFEST` | `tmp/vllm/runtime-manifest.json`, bắt buộc xác minh runtime vLLM. |
 | `LLM_TIMEOUT_SECONDS` / `LLM_DEADLINE_SECONDS` | 120 / 130 giây. |
 | `LLM_MAX_OUTPUT_TOKENS` | 1024; nằm chung context budget với prompt. |
-| `LLM_API_KEY` | Tùy chọn khi endpoint ngoài yêu cầu xác thực. |
-| `OPENROUTER_API_KEY` | Cần khi `analysis_mode: openrouter`. |
+| `LLM_API_KEY` | Tùy chọn khi endpoint vLLM yêu cầu xác thực. |
 | `HF_TOKEN` | Tùy chọn cho checkpoint private/gated; model public không yêu cầu. |
-| `LOCAL_LLM_DEVICE`, `LOCAL_LLM_MODEL_CACHE` | Thiết bị/cache của launcher cũ. |
-| `LOCAL_LLM_MODEL`, `LOCAL_LLM_REVISION`, `HF_HOME` | Model/revision/cache của launcher cũ; tách khỏi lựa chọn Agent trong YAML. |
 
 ### vLLM trong WSL2 trên ổ D
 
@@ -147,31 +143,6 @@ Start chờ ready tối đa 600 giây rồi trả quyền điều khiển, để
 Start/stop mặc định cổng 8000, hỗ trợ `-Port 8001` cho candidate. Stop kiểm ownership,
 kernel birth identity, process group và Windows relay; không dừng process ngoài
 nhóm đã xác minh. Restart bằng stop rồi start, chạy tuần tự.
-
-### Transformers cũ và OpenRouter
-
-Rollback Transformers dùng môi trường Windows riêng:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts/setup_local_llm.ps1
-powershell -ExecutionPolicy Bypass -File scripts/stop_vllm.ps1
-```
-
-Đặt `LLM_LOCAL_BACKEND=bundled` và endpoint phù hợp trong `.env`; trong config run
-mới đặt `model_id: Qwen/Qwen2.5-0.5B-Instruct`. Launcher cũ đọc
-`LOCAL_LLM_MODEL`/revision trong `.env`:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts/start_local_llm.ps1
-```
-
-Hai server GPU chạy lần lượt. Trước khi phục hồi vLLM, dừng server cũ bằng
-`scripts/stop_local_llm.ps1`, phục hồi `LLM_LOCAL_BACKEND=vllm`/model_id Qwen3.5
-rồi gọi start_vllm. Dùng terminal mới hoặc cập nhật process env để tránh override
-cấu hình `.env` vừa sửa. Không sửa model_id trong artifacts lịch sử.
-
-OpenRouter dùng `analysis_mode: openrouter`, `model_id` tương thích endpoint và
-`OPENROUTER_API_KEY` trong `.env`.
 
 ## Config, ngân sách và capability
 
@@ -232,16 +203,15 @@ không bị ép gọi lại. `metadata.calls` giữ từng phản hồi và chi 
 
 ## Prompt, schema và context
 
-Xem [README của prompts](src/mas_demo/prompts/README.md) để biết cách ghép từng
-backend. Prompt được đọc lại mỗi request, không cần restart vLLM khi chỉ sửa text.
+Xem [README của prompts](src/mas_demo/prompts/README.md) để biết cách ghép prompt
+cho từng role. Prompt được đọc lại mỗi request, không cần restart vLLM khi chỉ sửa text.
 
-Schema sinh từ Python contracts; riêng vLLM được ràng buộc theo state trong
-`output_schema.py`, gửi qua trường HTTP `response_format`. `response_format.txt`
-chỉ là câu dẫn trước schema cho bundled/cloud, không phải nơi chứa schema vLLM.
-Root reason local giới hạn 160 ký tự; Planner vLLM giới hạn patch.reason và
+Schema sinh từ Python contracts, được ràng buộc theo state trong
+`output_schema.py` và gửi qua trường HTTP `response_format` của vLLM.
+Root reason giới hạn 160 ký tự; Planner vLLM giới hạn patch.reason và
 expected_effect 120 ký tự. Compiler/admission vẫn kiểm ngữ nghĩa sau generation.
 
-vLLM preflight dùng `/tokenize`; bundled dùng `/v1/token-count`. Tổng prompt và
+vLLM preflight dùng `/tokenize`. Tổng prompt và
 output reserve phải vừa context. Gateway có thể bỏ history cũ hoặc tham chiếu
 output trước; giữ nguyên metrics/evidence và ghi `context_compaction`. Không còn
 chỗ thì chặn generation. Sửa code server khác với sửa prompt: code server cần restart.
@@ -258,12 +228,7 @@ New-Item -ItemType Directory -Force -Path $env:TEMP | Out-Null
 ```
 
 Suite mặc định dùng HTTP stand-in và kiểm tra ownership/process; không tự chạy
-benchmark model thật hoặc tạo distro. Test server Transformers có thể skip nếu
-chưa cài dependency riêng; kiểm riêng bằng:
-
-```powershell
-.\tmp\llm-server-venv\Scripts\python.exe -m pytest tests/test_local_llm_server.py -q
-```
+benchmark model thật hoặc tạo distro.
 
 Khi vLLM đang ready, kiểm ba role hoặc một nhóm Planner nhỏ:
 
@@ -296,6 +261,10 @@ nó không phải điều kiện để chạy training hoặc pytest thông thư
 .\.venv\Scripts\python.exe -m mas_demo.cli resume artifacts/<run>
 .\.venv\Scripts\python.exe -m mas_demo.cli migrate-config artifacts/<old-run>/config.json --output tmp/migrated-v3.yaml
 ```
+
+Migration là bước chuyển cấu hình tường minh: mode của provider đã bỏ được chuyển
+sang `vllm` và model mặc định hiện tại. File config/run cũ giữ nguyên; cấu hình
+khởi tạo training được giữ, còn optimizer/checkpoint cũ không được resume tự động.
 
 Thay `<run>`/`<old-run>` bằng tên thật. Stop chờ epoch/verification boundary;
 run đã hoàn thành resume là no-op. Crash chưa ghi đủ chi phí trả INTERRUPTED,
