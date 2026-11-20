@@ -8,5 +8,5 @@ $env:TMP = $env:TEMP
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 & .venv/Scripts/python -m pip install --no-cache-dir torch==2.7.1 torchvision==0.22.1 --index-url https://download.pytorch.org/whl/cu126
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-& .venv/Scripts/python -m pip install -e '.[dev]'
+& .venv/Scripts/python -m pip install -e '.'
 exit $LASTEXITCODE

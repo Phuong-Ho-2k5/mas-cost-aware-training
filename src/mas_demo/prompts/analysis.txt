@@ -1,30 +1,17 @@
 Phát hiện bất thường trong quá trình huấn luyện từ các chỉ số theo epoch và xu hướng được cung cấp.
 
-Chỉ dùng diễn biến training logs để quyết định có bất thường hay không: loss,
-accuracy, gradient và quan sát theo epoch. Vận dụng kiến thức học máy để đọc
-xu hướng; không có ngưỡng phát hiện cố định. Config ban đầu, current_config,
-task và dữ liệu chỉ giúp đưa ra lý do có thể xảy ra bất thường SAU KHI logs
-cho thấy dấu hiệu. Cùng logs, thay config/data không tự làm đổi status;
-chỉ giả thuyết nguyên nhân có thể thay đổi. reason nêu quan sát trong logs,
-hypotheses[].cause nêu nguyên nhân nghi ngờ, chưa được chứng minh.
+Chỉ dùng diễn biến training logs để quyết định có bất thường hay không: loss, accuracy, gradient và quan sát theo epoch. Vận dụng kiến thức học máy để đọc xu hướng; không có ngưỡng phát hiện cố định. Config ban đầu, current_config, task và dữ liệu chỉ giúp đưa ra lý do có thể xảy ra bất thường SAU KHI logs cho thấy dấu hiệu. Cùng logs, thay config/data không tự làm đổi status; chỉ giả thuyết nguyên nhân có thể thay đổi. reason nêu quan sát trong logs, hypotheses[].cause nêu nguyên nhân nghi ngờ, chưa được chứng minh.
 
-Tự chọn status; không có trạng thái mặc định.
-DIAGNOSED nghĩa là quá trình huấn luyện có dấu hiệu bất thường và có cơ sở cho một giả thuyết có thể kiểm chứng.
-Viện dẫn evidence_epochs có sẵn và giải thích nguyên nhân nghi ngờ. Chưa cần chứng minh:
-nhánh đối chứng và các nhánh thử nghiệm sẽ kiểm chứng giả thuyết. Độ tin cậy là ước lượng, không phải bằng chứng.
+metric_trends được tính từ evidence: step_deltas và step_directions tương ứng từng epoch_pairs; up/tăng, down/giảm, flat/không đổi, unavailable/thiếu dữ liệu. val_accuracy dùng điểm phần trăm. window_delta là cuối trừ đầu; pattern=mixed nghĩa là có cả tăng và giảm, không phải xu hướng đơn điệu. Dùng các phép tính này khi mô tả biến động. Chúng không tự xác định bất thường hay nguyên nhân.
 
-ABSTAIN nghĩa là quá trình huấn luyện có vẻ bình thường hoặc các quan sát chưa đủ cơ sở để xác định bất thường.
-Trả về hypotheses: [] và giải thích lý do. status và reason phải nhất quán.
+Tự chọn status; không có trạng thái mặc định. DIAGNOSED nghĩa là quá trình huấn luyện có dấu hiệu bất thường. Trả về đúng 3 hypothesis về 3 nguyên nhân nghi ngờ khác nhau về mặt ý nghĩa có thể kiểm chứng; không diễn đạt lại cùng một nguyên nhân để đủ số lượng. Mỗi hypothesis có hypothesis_id riêng, cause cụ thể, evidence_epochs có sẵn và confidence riêng theo mức độ hỗ trợ của bằng chứng. Không dùng danh sách nguyên nhân cố định, không bịa số đo hay khẳng định nguyên nhân đã được chứng minh. Chưa cần chứng minh: nhánh đối chứng và các nhánh thử nghiệm sẽ kiểm chứng giả thuyết. Độ tin cậy là ước lượng, không phải bằng chứng.
 
-Nếu có repair_attempt, phản hồi trước đã không vượt qua bước kiểm tra tính hợp lệ.
-Đọc validation_errors, đánh giá lại cùng các bằng chứng và trả về JSON đã sửa đầy đủ.
-Tự chọn một trong hai trạng thái: chẩn đoán cần có giả thuyết dựa trên bằng chứng;
-nếu không chẩn đoán, danh sách hypotheses phải rỗng. Không bao giờ kết hợp ABSTAIN với một giả thuyết.
-Không sao chép trạng thái trước nếu trạng thái đó mâu thuẫn với kết luận của bạn.
+ABSTAIN nghĩa là quá trình huấn luyện có vẻ bình thường hoặc các quan sát chưa đủ cơ sở để xác định bất thường. Trả về hypotheses: [] và giải thích lý do. status và reason phải nhất quán.
 
-Chỉ chẩn đoán: không tạo biện pháp can thiệp, giá trị thử nghiệm hoặc số epoch.
-Planner sẽ tạo các thử nghiệm riêng. Sử dụng các epoch có sẵn ngay cả khi cửa sổ dữ liệu
-chưa đầy đủ; evidence.status mô tả mức độ sẵn có của dữ liệu, không phải kết quả chẩn đoán.
+Nếu có repair_attempt, phản hồi trước đã không vượt qua bước kiểm tra tính hợp lệ. Đọc validation_errors, đánh giá lại cùng các bằng chứng và trả về JSON đã sửa đầy đủ. Tự chọn một trong hai trạng thái: DIAGNOSED cần đúng 3 hypothesis khác nhau về mặt ý nghĩa dựa trên bằng chứng; nếu không chẩn đoán, danh sách hypotheses phải rỗng. Không bao giờ kết hợp ABSTAIN với một giả thuyết. Không sao chép trạng thái trước nếu trạng thái đó mâu thuẫn với kết luận của bạn.
 
-Các chỉ số là dữ liệu quan sát; history chứa kết quả trước đây. Không bịa số đo,
-thay đổi tham số hoặc mặc định rằng lần chạy phải có lỗi.
+Chỉ chẩn đoán: không tạo biện pháp can thiệp, giá trị thử nghiệm hoặc số epoch. Planner sẽ tạo các thử nghiệm riêng. Sử dụng các epoch có sẵn ngay cả khi cửa sổ dữ liệu chưa đầy đủ; evidence.status mô tả mức độ sẵn có của dữ liệu, không phải kết quả chẩn đoán.
+
+Các chỉ số là dữ liệu quan sát; history chứa kết quả trước đây. Không bịa số đo, thay đổi tham số hoặc mặc định rằng lần chạy phải có lỗi.
+
+Mỗi hypothesis có rank nguyên 1, 2 hoặc 3, dùng mỗi hạng đúng một lần. Rank 1 là nguyên nhân nên kiểm chứng trước, rank 3 sau cùng; thứ hạng độc lập với vị trí trong mảng và confidence. Nêu ngắn căn cứ xếp thứ tự trong reason. Không tự điền rank theo thứ tự nếu chưa đánh giá bằng chứng.

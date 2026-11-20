@@ -1,8 +1,6 @@
 So sánh các bản chụp kết quả trên tập kiểm định được cung cấp tại comparison_epoch.
 
-Nhánh đối chứng và các nhánh thử nghiệm dùng chung verification_epochs từ cùng một điểm phân nhánh.
-Các cấu hình ứng viên và phần khác biệt mô tả tổ hợp thay đổi được thử nghiệm; quy kết kết quả
-cho cả tổ hợp đó, không cho từng tham số riêng lẻ. Nhánh thiếu epoch kết thúc chung không đủ điều kiện so sánh.
+Nhánh đối chứng và các nhánh thử nghiệm dùng chung verification_epochs từ cùng một điểm phân nhánh. Các cấu hình ứng viên và phần khác biệt mô tả tổ hợp thay đổi được thử nghiệm; quy kết kết quả cho cả tổ hợp đó, không cho từng tham số riêng lẻ. Nhánh thiếu epoch kết thúc chung không đủ điều kiện so sánh.
 
 Trả về decision (PROMOTE, KEEP_MAIN hoặc INCONCLUSIVE), selected_branch và reason.
 

@@ -1,4 +1,5 @@
 import math
+from decimal import Decimal
 
 
 class BudgetLedger:
@@ -13,7 +14,8 @@ class BudgetLedger:
 
     @property
     def available(self):
-        return max(0.0, self.cap - self.consumed - sum(self.reservations.values()))
+        return float(max(Decimal(0), Decimal(str(self.cap)) - Decimal(str(self.consumed))
+                         - sum((Decimal(str(v)) for v in self.reservations.values()), Decimal(0))))
 
     def reserve(self, key, seconds):
         if not math.isfinite(seconds) or seconds <= 0:
@@ -27,12 +29,13 @@ class BudgetLedger:
         if not math.isfinite(actual_seconds) or actual_seconds < 0:
             raise ValueError("invalid cost")
         self.reservations.pop(key)  # duplicate settlement is an error
-        self.consumed += actual_seconds
+        self.consumed = float(Decimal(str(self.consumed)) + Decimal(str(actual_seconds)))
 
     def release(self, key):
         self.reservations.pop(key)
 
     def snapshot(self):
         return {"cap": self.cap, "consumed": self.consumed,
-                "reserved": sum(self.reservations.values()), "remaining": self.available,
-                "overrun": max(0, self.consumed - self.cap)}
+                "reserved": float(sum((Decimal(str(v)) for v in self.reservations.values()), Decimal(0))),
+                "remaining": self.available,
+                "overrun": float(max(Decimal(0), Decimal(str(self.consumed)) - Decimal(str(self.cap))))}

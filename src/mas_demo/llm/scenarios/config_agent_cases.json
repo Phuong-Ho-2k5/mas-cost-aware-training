@@ -75,7 +75,7 @@
     "id": "p-empty",
     "role": "planner",
     "scenario": "empty",
-    "expected": "EMPTY"
+    "expected": "NONEMPTY"
   },
   {
     "id": "p-cooldown",

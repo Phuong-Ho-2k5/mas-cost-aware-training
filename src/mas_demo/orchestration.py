@@ -143,7 +143,7 @@ def _run(spec, directory, resume, backend, gateway):
             state["config_revision"] += 1
         checkpoint, active = segment.checkpoint, segment.training_config
         history.extend(
-            event.model_copy(update={"branch_id": "main"}) for event in segment.events
+            event.model_copy(deep=True) for event in segment.events
         )
         state["epoch"] = checkpoint.epoch
         best = max(
@@ -191,7 +191,8 @@ def _run(spec, directory, resume, backend, gateway):
                     reason=segment.error or "Main segment incomplete or early-stopped",
                 )
                 return state
-            evidence = build_evidence(history, "main", spec.window)
+            # Only accepted lineage segments are in history; keep worker IDs.
+            evidence = build_evidence(history, "main", spec.window, selected_lineage=True)
             state["round"] += 1
             number = state["round"]
             append_event(log, "evidence", evidence=evidence)
@@ -212,7 +213,13 @@ def _run(spec, directory, resume, backend, gateway):
                 return state
             if state["epoch"] >= spec.max_epochs:
                 break
-            if diagnosis.status == "ABSTAIN" or not spec.max_trials:
+            if diagnosis is None:
+                append_event(log, "decision", intent="NOOP", round=number,
+                             reason=metadata.get("outcome", "Analysis failed"),
+                             error=metadata.get("error"))
+                save()
+                continue
+            if diagnosis.status == "ABSTAIN" or state["epoch"] >= spec.max_epochs:
                 append_event(
                     log,
                     "decision",
@@ -235,14 +242,6 @@ def _run(spec, directory, resume, backend, gateway):
                     previous,
                     number,
                     remaining,
-                    ledger.available,
-                    {
-                        "epoch_seconds": estimate,
-                        "worker_overhead_seconds": policy.worker_overhead_seconds,
-                        "safety_margin": policy.safety_margin,
-                        "control_required": True,
-                        "continuation_required_if_not_final": True,
-                    },
                     gateway=gateway,
                     previous_response=previous_response,
                     validation_errors=errors,
@@ -275,29 +274,7 @@ def _run(spec, directory, resume, backend, gateway):
                         policy,
                         evidence.epochs,
                         remaining,
-                        {h.hypothesis_id for h in diagnosis.hypotheses},
-                    )
-                    if not compiled.candidates:
-                        break
-                    memory.check_cooldown(
-                        context, compiled, number, policy.cooldown_rounds
-                    )
-                    continuation = (
-                        (estimate + policy.worker_overhead_seconds)
-                        * (1 + policy.safety_margin)
-                        if compiled.verification_epochs < remaining
-                        else 0
-                    )
-                    admission = admit_plan(
-                        compiled,
-                        ledger,
-                        estimate,
-                        policy.worker_overhead_seconds,
-                        policy.safety_margin,
-                        continuation,
-                        number,
-                        current_config=active,
-                        train_samples=spec.train_samples,
+                        {h.hypothesis_id: h.rank for h in diagnosis.hypotheses},
                     )
                     break
                 except ProposalError as error:
@@ -309,6 +286,32 @@ def _run(spec, directory, resume, backend, gateway):
                         repair_attempt=attempt,
                         errors=errors,
                     )
+            if compiled is not None and compiled.candidates:
+                try:
+                    admission = admit_plan(
+                        compiled, ledger, estimate, policy.worker_overhead_seconds,
+                        policy.safety_margin, remaining, number, current_config=active,
+                        train_samples=spec.train_samples, max_trials=policy.max_trials,
+                        cooldown_reasons=memory.cooldown_blocks(
+                            context, compiled, number, policy.cooldown_rounds),
+                    )
+                except ProposalError as error:
+                    append_event(log, "admission_error", round=number, error=error.as_dict())
+                    save(status="INTERRUPTED", reason=str(error))
+                    return state
+                round_dir = directory / "rounds" / f"round-{number:03}"
+                write_json(round_dir / "admission.json", admission)
+                append_event(log, "admission", round=number, plan=compiled, admission=admission)
+                by_id = {c.trial_id: c for c in compiled.candidates}
+                for skipped in admission.skipped:
+                    candidate = by_id[skipped.trial_id]
+                    memory.record(
+                        context, candidate.base_config_hash, candidate.config_hash, number,
+                        status=skipped.code, seconds=0, proposal_id=candidate.proposal_id,
+                        hypothesis_id=candidate.hypothesis_id, hypothesis_rank=candidate.hypothesis_rank,
+                        estimated_seconds=skipped.estimated_seconds, reason=skipped.reason,
+                        verification_epochs=compiled.verification_epochs, diff=candidate.diff,
+                    )
             if admission is None:
                 append_event(
                     log,
@@ -317,6 +320,11 @@ def _run(spec, directory, resume, backend, gateway):
                     reason="Planner abstained or plan remained infeasible",
                     round=number,
                 )
+                save()
+                continue
+            if not admission.approved:
+                append_event(log, "decision", intent="NOOP", round=number,
+                             reason="Controller did not admit any trials")
                 save()
                 continue
             round_dir = directory / "rounds" / f"round-{number:03}"
@@ -348,6 +356,7 @@ def _run(spec, directory, resume, backend, gateway):
                 candidates={
                     candidate.trial_id: candidate.model_dump()
                     for candidate in admission.approved
+                    if candidate.trial_id in valid_trials and outcome.control.status == "COMPLETE"
                 },
                 verification_epochs=admission.horizon,
             )
@@ -403,6 +412,8 @@ def _run(spec, directory, resume, backend, gateway):
                     gain=gain,
                     seconds=part.seconds,
                     proposal_id=candidate.proposal_id,
+                    hypothesis_id=candidate.hypothesis_id,
+                    hypothesis_rank=candidate.hypothesis_rank,
                 )
             if selected.status == "COMPLETE":
                 commit_segment(selected)

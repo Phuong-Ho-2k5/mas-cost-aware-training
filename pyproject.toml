@@ -14,9 +14,6 @@ dependencies = [
   "python-dotenv>=1,<2", "jsonschema>=4.23,<5", "scikit-learn>=1.4,<2"
 ]
 
-[project.optional-dependencies]
-dev = ["pytest>=8,<10"]
-
 [project.scripts]
 mas-demo = "mas_demo.cli:main"
 
@@ -26,7 +23,4 @@ where = ["src"]
 [tool.setuptools.package-data]
 "mas_demo.prompts" = ["*.txt"]
 "mas_demo.training" = ["assets/*.npz", "assets/*.json"]
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-pythonpath = ["src"]
+"mas_demo.llm" = ["scenarios/*.json"]

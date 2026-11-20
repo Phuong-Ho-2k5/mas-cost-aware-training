@@ -124,6 +124,7 @@ def monitor():
     events = read_events(selected / "events.jsonl")
     diagnoses = [e for e in events if e["kind"] == "diagnosis"]
     plans = [e for e in events if e["kind"] == "trial_plan"]
+    admissions = [e for e in events if e["kind"] == "admission"]
     evaluations = [e for e in events if e["kind"] == "evaluation"]
     with st.expander(
         "LLM: output và lần gọi của từng agent",
@@ -144,6 +145,10 @@ def monitor():
                 agent_metadata = latest_agent.get("metadata", {})
                 if kind == "diagnosis" and agent_metadata.get("error"):
                     st.error(
+                        "Phát hiện bất thường; chưa sinh được bộ giả thuyết hợp lệ."
+                        if (agent_metadata.get("detection") or {}).get("status") == "DIAGNOSED" else
+                        "Analysis chưa có kết luận hợp lệ do lỗi detection."
+                        if agent_metadata.get("pipeline_version") == 2 else
                         "Analysis gặp lỗi output hoặc gọi model. ABSTAIN bên dưới là kết quả dự phòng, "
                         "không phải kết luận training bình thường."
                     )
@@ -165,9 +170,19 @@ def monitor():
     left, right = st.columns(2)
     left.subheader("Chẩn đoán và thử sửa")
     if diagnoses:
-        if diagnoses[-1].get("metadata", {}).get("error"):
-            left.warning("Analysis gặp lỗi; chưa có kết luận hợp lệ cho lượt này.")
-        left.json(diagnoses[-1]["diagnosis"], expanded=True)
+        latest_diagnosis = diagnoses[-1]
+        analysis_metadata = latest_diagnosis.get("metadata", {})
+        if analysis_metadata.get("error"):
+            left.warning("Phát hiện bất thường; chưa sinh được bộ giả thuyết hợp lệ."
+                         if (analysis_metadata.get("detection") or {}).get("status") == "DIAGNOSED"
+                         else "Analysis gặp lỗi; chưa có kết luận hợp lệ cho lượt này.")
+        if latest_diagnosis.get("diagnosis") is not None:
+            left.json(latest_diagnosis["diagnosis"], expanded=True)
+        elif analysis_metadata.get("detection"):
+            left.json(analysis_metadata["detection"], expanded=True)
+        if analysis_metadata.get("facts"):
+            with left.expander("Quan sát tính từ logs"):
+                st.dataframe(pd.DataFrame(analysis_metadata["facts"]), hide_index=True, width="stretch")
     else:
         left.write(
             "Chưa có chẩn đoán; Analysis được gọi sau mỗi epoch, kể cả khi chưa đủ window."
@@ -175,6 +190,26 @@ def monitor():
     if plans:
         with left.expander("Trial plan và admission", expanded=True):
             st.json(plans[-1])
+    if admissions:
+        latest_admission = admissions[-1]
+        admission = latest_admission["admission"]
+        skipped = {s["trial_id"]: s for s in admission.get("skipped", [])}
+        approved = {c["trial_id"] for c in admission.get("approved", [])}
+        costs = (admission.get("cost_quote") or {}).get("trial_costs", {})
+        rows = []
+        for candidate in latest_admission["plan"]["candidates"]:
+            trial_id = candidate["trial_id"]
+            skip = skipped.get(trial_id, {})
+            rows.append({
+                "Hạng": candidate.get("hypothesis_rank"),
+                "Hypothesis": candidate["hypothesis_id"], "Trial": trial_id,
+                "Dự trù (giây)": costs.get(trial_id, {}).get("reserved_seconds"),
+                "Quyết định": "Được duyệt" if trial_id in approved else skip.get("code", "Chưa duyệt"),
+                "Lý do bỏ qua": skip.get("reason", ""),
+            })
+        with left.expander("Controller: ưu tiên và ngân sách", expanded=True):
+            st.caption(f"Vòng {latest_admission['round']} · Giữ chỗ {admission.get('reserved_total_seconds', 0):.1f}s")
+            st.dataframe(pd.DataFrame(rows).sort_values("Hạng"), hide_index=True, width="stretch")
     rejected = [e for e in events if e["kind"] == "plan_rejected"]
     if rejected:
         with left.expander("Kế hoạch bị từ chối / phản hồi cho Planner"):

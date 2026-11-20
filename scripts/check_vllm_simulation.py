@@ -22,7 +22,7 @@ from mas_demo.agents.analysis import diagnose
 from mas_demo.agents.planner import plan_with_agent
 from mas_demo.agents.evaluation import evaluate_with_agent
 from mas_demo.configuration import training_capabilities
-from mas_demo.contracts import EvidenceWindow, TaskSpec
+from mas_demo.contracts import EvidenceWindow, EpochEvent, TaskSpec
 from mas_demo.llm.gateway import GatewayError, VLLMGateway
 from mas_demo.llm import health
 from vllm_simulation_process import OwnedSimulation
@@ -94,6 +94,17 @@ def main():
         result, meta = gateway.complete({})
         assert result.status == "ABSTAIN" and meta["finish_reason"] == "stop"
         records.append({"case": "success", "metadata": meta})
+        result, meta = diagnose(spec, evidence, [], gateway)
+        assert result is not None and result.status == "ABSTAIN" and not meta.get("error")
+        records.append({"case": "two-stage-abstain", "metadata": meta})
+        fault[0] = "diagnosed"
+        observed = EvidenceWindow(epochs=[1, 2], branch_id="main", status="READY", recent_events=[
+            EpochEvent(epoch=i, branch_id="main", train_loss=float(i), val_loss=float(i),
+                       val_accuracy=.8 / i, grad_norm=float(i), learning_rate=.01) for i in (1, 2)])
+        result, meta = diagnose(spec, observed, [], gateway)
+        assert result is not None and result.status == "DIAGNOSED" and len(result.hypotheses) == 3
+        assert not meta.get("error") and len(meta["calls"]) == 2
+        records.append({"case": "two-stage-diagnosed", "metadata": meta})
         fault[0] = "models-mismatch"
         try:
             health.wait_for_server(gateway, timeout=1)
@@ -113,9 +124,9 @@ def main():
                 raise AssertionError(f"Fault {case} did not fail closed")
             diagnosis, analysis_meta = diagnose(spec, evidence, [], gateway)
             plan, plan_meta = plan_with_agent(spec, None, evidence, spec.training,
-                training_capabilities(), [], 1, 8, 800, {}, gateway=gateway)
+                training_capabilities(), [], 1, 8,  gateway=gateway)
             verdict, eval_meta = evaluate_with_agent(spec, [], {}, 4, gateway)
-            assert diagnosis.status == "ABSTAIN" and analysis_meta.get("error")
+            assert diagnosis is None and analysis_meta.get("error")
             assert plan is None and plan_meta.get("error")
             assert verdict.decision == "INCONCLUSIVE" and eval_meta.get("error")
             records[-1]["agent_fallbacks"] = {"analysis": analysis_meta, "planner": plan_meta, "evaluation": eval_meta}

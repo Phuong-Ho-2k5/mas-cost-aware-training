@@ -4,34 +4,64 @@ Các file được đọc mới mỗi request qua `load_prompt()`. Sửa text c�
 lượt gọi Agent tiếp theo, kể cả run đang hoạt động; không cần restart server.
 Schema/validator và khả năng thực thi vẫn nằm trong Python.
 
+Định dạng các file prompt `.txt`: mỗi đoạn nằm trên một dòng vật lý, không xuống
+dòng cứng giữa đoạn; dùng dòng trống để ngăn các đoạn.
+
 ## Vai trò
 
 | File | Trách nhiệm |
 | --- | --- |
-| `analysis.txt` | Quyết định DIAGNOSED/ABSTAIN từ training logs; config/data chỉ hỗ trợ giả thuyết nguyên nhân. |
-| `planner.txt` | Nhận diagnosis, sinh sparse patch với giá trị mới, tự chọn số trial/horizon theo tài nguyên; hướng dẫn repair NO_OP/duplicate. |
+| `analysis.txt` | Prompt một bước cho adapter legacy `gateway.complete`; không dùng trong pipeline hai bước. |
+| `analysis_detection.txt` | Đọc nguyên bản ghi epoch và viện dẫn bằng epoch; không nhận current_config riêng. |
+| `analysis_hypotheses.txt` | Nhận detection đã khóa và config thực tế; sinh ba cơ chế nguyên nhân nghi ngờ. |
+| `local_vllm_analysis.txt` | Wrapper JSON riêng cho hai bước Analysis, không chứa chỉ dẫn Planner/Evaluation. |
+| `planner.txt` | Nhận diagnosis có rank, tạo đúng một trial cho mỗi hypothesis, sinh sparse patch và chọn horizon; controller quyết định ngân sách. |
 | `evaluation.txt` | So control/trial sau khi chạy tại comparison epoch, chọn kết quả phù hợp. |
 | `local.txt` | Hướng dẫn ngắn dùng chung cho Analysis/Evaluation vLLM. |
 | `local_vllm.txt` | JSON gọn và chỉ dẫn bổ sung cho Analysis/Evaluation vLLM. |
 | `local_vllm_planner.txt` | JSON gọn riêng Planner, mẫu proposal/abstain và giới hạn văn bản. |
 
+Analysis trả đúng 3 hypothesis về các nguyên nhân nghi ngờ khác nhau khi DIAGNOSED;
+ABSTAIN trả danh sách rỗng. Mỗi hypothesis có ID riêng, rank 1–3 duy nhất và
+viện dẫn epoch có thật. Rank 1 được kiểm chứng trước, độc lập với confidence.
 Analysis chọn status theo diễn biến logs. Config đáng ngờ không tự chứng minh
 training bất thường. Planner dùng diagnosis để lập phép thử, không chẩn đoán lại;
-abstain tài nguyên không thay đổi kết luận của Analysis. `max_trials=3` là trần.
+quyết định ngân sách thuộc controller. `max_trials=3` là trần số trial thực thi.
+Kế hoạch có trial phải bao phủ đúng một trial riêng cho mỗi hypothesis: ba
+hypothesis tạo ba trial, với ba cấu hình khác nhau. Controller tính thời gian,
+xét rank/cooldown/policy và ngân sách rồi chọn 0–3 trial. Control/phần tiếp tục
+chỉ tính một lần cho nhóm được chọn; không đổi patch hoặc horizon của Planner.
+Planner nhận status và đầy đủ hypotheses (ID, rank, cause, confidence, evidence_epochs),
+không nhận số dư ngân sách hoặc trần thực thi để tự loại proposal.
+Không lặp lại mode/reason dài của Analysis trong payload Planner; bản gốc vẫn
+có trong logs Analysis. Lý do abstain rỗng hoặc chỉ là placeholder bị từ chối
+với INVALID_ABSTENTION_REASON để Planner sửa lại.
 `changes` chỉ ghi field thực sự đổi, field bỏ qua tự giữ nguyên; đổi ID hoặc lời
 giải thích không biến một config cũ thành trial mới.
+
+Analysis nhận nguyên các bản ghi `EpochEvent` trong `evidence.recent_events`,
+giữ đầy đủ field từ worker, kể cả null, thông số, thời gian, số mẫu và số bước
+optimizer. Không gửi bảng facts/trends tính sẵn hoặc yêu cầu viện dẫn mã SHA256.
+Cả hai bước viện dẫn bằng `evidence_epochs`. Cửa sổ theo config `window`, mặc định
+training là 5; không phải toàn bộ lịch sử run hay stdout của worker. Wrapper ghi
+file JSONL (time/kind/schema_version) không thuộc bản ghi EpochEvent được gửi.
+Helper facts/trends và schema cũ vẫn giữ để đọc/kiểm thử giao thức legacy, không
+được gọi để dựng đầu vào của luồng Analysis hiện tại.
 
 ## Ghép prompt theo role
 
 | Role | System message |
 | --- | --- |
 | vLLM Planner | `planner.txt` + `local_vllm_planner.txt` |
-| vLLM Analysis | `analysis.txt` + `local.txt` + `local_vllm.txt` |
+| vLLM Analysis detection | `analysis_detection.txt` + `local_vllm_analysis.txt` |
+| vLLM Analysis hypotheses | `analysis_hypotheses.txt` + `local_vllm_analysis.txt` |
+| vLLM Analysis legacy (`gateway.complete`) | `analysis.txt` + `local.txt` + `local_vllm.txt` |
 | vLLM Evaluation | `evaluation.txt` + `local.txt` + `local_vllm.txt` |
 
 Gateway gửi schema qua trường HTTP `response_format` của vLLM.
+Payload JSON được mã hóa gọn, giữ nguyên dữ liệu để giảm token đầu vào.
 Expanded schema không lặp lại trong system message để tiết kiệm context; model
-nhận mẫu cấu trúc ngắn trong wrapper.
+nhận quy tắc JSON trong wrapper. Wrapper Planner còn có mẫu cấu trúc ngắn.
 
 ## Schema và validation
 
@@ -39,13 +69,40 @@ nhận mẫu cấu trúc ngắn trong wrapper.
 - [gateway.py](../llm/gateway.py) sinh schema và ghép request.
 - [output_schema.py](../llm/output_schema.py) ràng buộc schema vLLM theo state:
   hash/hypothesis/epoch/branch, field đang hoạt động, abstain và shared horizon.
-- Root reason giới hạn 160 ký tự. Planner vLLM giới hạn patch.reason và
-  expected_effect 120 ký tự; chỉ dẫn 15 từ trong prompt là yêu cầu bổ sung.
+- Root reason của Analysis giới hạn 512 ký tự, prompt yêu cầu 2–3 câu ngắn.
+  Root reason của Planner/Evaluation vẫn giới hạn 160 ký tự. Planner vLLM giới hạn
+  patch.reason và expected_effect 120 ký tự; cause, expected_effect và reason của
+  các vai trò khác vẫn có chỉ dẫn tối đa 15 từ trong prompt tương ứng.
 - [configuration.py](../configuration.py) kiểm patch/config khác nhau thực sự;
-  admission kiểm budget. JSON đúng schema vẫn có thể bị NO_OP hoặc duplicate.
+  kiểm mỗi hypothesis có đúng một trial và gắn rank từ Analysis; DIAGNOSED hợp lệ
+  bắt buộc có đủ ba proposal. Schema loại giá trị giữ nguyên khỏi sparse patch.
+  Admission chọn
+  nhóm trial vừa ngân sách theo rank, ghi rõ lý do bỏ qua từng trial.
+  JSON đúng schema vẫn có thể bị HYPOTHESIS_COVERAGE, NO_OP hoặc duplicate.
 
-Ví dụ dùng placeholder để minh họa hình thức; giá trị trial/horizon phải do model
-tự chọn theo đầu vào, không phải menu cố định. Sửa prompt không tự đổi validator,
+Giá trị trial/horizon phải do model tự chọn theo đầu vào, không phải menu cố định.
+Sửa prompt không tự đổi validator,
 không bảo đảm model tuân thủ hay chứng minh chất lượng quyết định ML.
 
 Xem [README chính](../../../../README.md) để chạy config, xem events và kiểm thử.
+
+## Audit hai bước
+
+Hai prompt Analysis và wrapper riêng được viết bằng tiếng Việt. Các trường văn bản
+tự do được yêu cầu viết tiếng Việt; tên field JSON và giá trị quy ước giữ nguyên.
+
+`diagnose()` gọi detection trước, chỉ gọi hypotheses khi DIAGNOSED. Mỗi bước được
+repair output tối đa một lần. Hai call thành công bình thường không tính là repair.
+Nếu bước nguyên nhân thất bại, diagnosis trả None; metadata.detection vẫn giữ
+DIAGNOSED và outcome=hypothesis_generation_failed. Planner không được gọi.
+ABSTAIN hợp lệ chỉ đến từ bước detection, không phải cách che lỗi sinh hypothesis.
+
+Trạng thái phải dựa trên logs; telemetry không bị loại chỉ vì bốn metric loss/
+accuracy/gradient thiếu. Epoch được viện dẫn phải có bản ghi worker thực tế.
+Sau promote, history chỉ gồm các segment thuộc lineage đã chọn và giữ nguyên
+branch_id worker, kể cả qua resume. Artifact cũ không được sửa ngược lại.
+Config claims kiểm giá trị và component đang hoạt động, chưa chứng minh cause đúng.
+Validator không phát hiện được mọi paraphrase hay khẳng định ngầm trong prose.
+Replay phải chấm nội dung riêng, kể cả khi JSON và references đều hợp lệ.
+Payload thực tế sau compact context nằm trong metadata.calls[].input_payload;
+có thể đối chiếu trực tiếp evidence.recent_events với bản ghi worker.

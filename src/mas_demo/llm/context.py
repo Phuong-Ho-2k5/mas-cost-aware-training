@@ -67,9 +67,8 @@ async def fit_local_context(client, base_url, body, metadata, headers, backend="
             and not compact["previous_response_referenced"]
         ):
             previous = payload["previous_response"]
-            analysis = (
-                body["response_format"]["json_schema"]["name"] == "training_diagnosis"
-            )
+            schema_name = body["response_format"]["json_schema"]["name"]
+            analysis = schema_name in ("training_diagnosis", "training_detection", "training_hypotheses")
             payload["previous_response"] = {
                 "stored_in": (
                     "previous analysis call in metadata.calls"
@@ -82,6 +81,10 @@ async def fit_local_context(client, base_url, body, metadata, headers, backend="
                     else []
                 ),
                 "instruction": (
+                    "Trả đầy đủ ba hypothesis đã sửa, dùng detection đã khóa, evidence và validation_errors. Không đổi status của detection."
+                    if schema_name == "training_hypotheses" else
+                    "Trả kết quả detection đã sửa đầy đủ, dựa trên evidence và validation_errors; tự chọn status phù hợp logs."
+                    if schema_name == "training_detection" else
                     "Return a complete corrected diagnosis using the evidence and validation errors; choose status yourself."
                     if analysis
                     else "Generate a corrected complete plan using the validation errors."
@@ -93,4 +96,4 @@ async def fit_local_context(client, base_url, body, metadata, headers, backend="
                 "Local context exceeds token budget; evidence was kept intact"
             )
         assert payload.get("evidence") == original.get("evidence")
-        body["messages"][1]["content"] = json.dumps(payload, allow_nan=False)
+        body["messages"][1]["content"] = json.dumps(payload, allow_nan=False, separators=(",", ":"))

@@ -45,10 +45,9 @@ class MemoryStore:
         records = [json.loads(row[0]) for row in rows]
         return records[:limit] if limit else records
 
-    def check_cooldown(self, context, plan, round_id, cooldown):
-        from mas_demo.configuration import ProposalError
-
+    def cooldown_blocks(self, context, plan, round_id, cooldown):
         rows = self.retrieve(context, round_id)
+        blocked = {}
         for candidate in plan.candidates:
             if any(
                 row["base_config_hash"] == candidate.base_config_hash
@@ -57,8 +56,5 @@ class MemoryStore:
                 and round_id - row["round_id"] <= cooldown
                 for row in rows
             ):
-                raise ProposalError(
-                    "COOLDOWN",
-                    "Candidate was recently rejected from this base",
-                    proposal_id=candidate.proposal_id,
-                )
+                blocked[candidate.trial_id] = "Candidate was recently rejected from this base"
+        return blocked

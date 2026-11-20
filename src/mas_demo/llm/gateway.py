@@ -31,18 +31,19 @@ def response_schema(role, response_type, mode="vllm", max_trials=None, payload=N
     schema = response_type.model_json_schema()
     if mode != "vllm":
         raise ValueError("Only vLLM response schemas are supported")
-    schema["properties"]["reason"]["maxLength"] = 160
+    schema["properties"]["reason"]["maxLength"] = (
+        512 if role == "analysis" else 240 if role == "analysis_detection" else 160
+    )
     if role == "analysis":
-        schema["properties"]["hypotheses"]["maxItems"] = 1
+        schema["properties"]["hypotheses"]["maxItems"] = 3
         hypothesis = schema["$defs"]["AnalysisHypothesis"]["properties"]
         hypothesis["cause"]["maxLength"] = 160
         hypothesis["hypothesis_id"]["maxLength"] = 48
         hypothesis["evidence_epochs"]["maxItems"] = 8
 
     if role == "planner":
-        schema["properties"]["proposals"]["maxItems"] = (
-            3 if max_trials is None else max_trials
-        )
+        schema["properties"]["reason"]["minLength"] = 1
+        schema["properties"]["proposals"]["maxItems"] = 3
 
     def compact(node):
         if isinstance(node, dict):
@@ -141,12 +142,17 @@ class VLLMGateway:
         )
         schema_name = {
             "analysis": "training_diagnosis",
+            "analysis_detection": "training_detection",
+            "analysis_hypotheses": "training_hypotheses",
             "planner": "training_plan",
             "evaluation": "training_evaluation",
         }[role]
-        if role != "planner":
-            instruction += load_prompt("local")
-        instruction += load_prompt("local_vllm_planner" if role == "planner" else "local_vllm")
+        if role in ("analysis_detection", "analysis_hypotheses"):
+            instruction += "\n" + load_prompt("local_vllm_analysis")
+        else:
+            if role != "planner":
+                instruction += load_prompt("local")
+            instruction += load_prompt("local_vllm_planner" if role == "planner" else "local_vllm")
         system = instruction
         metadata["response_schema"] = schema
         body = {
@@ -158,7 +164,7 @@ class VLLMGateway:
                     "role": "system",
                     "content": system,
                 },
-                {"role": "user", "content": json.dumps(payload, allow_nan=False)},
+                {"role": "user", "content": json.dumps(payload, allow_nan=False, separators=(",", ":"))},
             ],
             "response_format": {
                 "type": "json_schema",
@@ -174,6 +180,7 @@ class VLLMGateway:
                 client, self.base_url, body, metadata,
                 {"Authorization": "Bearer " + self.key} if self.key else {},
             )
+            metadata["input_payload"] = json.loads(body["messages"][1]["content"])
             for attempt in range(self.attempts):
                 metadata["attempts"] = attempt + 1
                 remaining = self.deadline - (time.monotonic() - started)

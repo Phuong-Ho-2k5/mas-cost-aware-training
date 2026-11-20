@@ -31,8 +31,8 @@ def load_cases(path=None):
     path = (
         Path(path)
         if path
-        else Path(__file__).resolve().parents[3]
-        / "tests/fixtures/config_agent_cases.json"
+        else Path(__file__).resolve().parent
+        / "scenarios/config_agent_cases.json"
     )
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -107,6 +107,29 @@ def scenario_inputs(scenario, spec):
     )
 
 
+def analysis_stage_scores(metadata):
+    def valid(call):
+        if call.get("finish_reason") not in (None, "stop") or not call.get("raw_output") or not call.get("response_schema"):
+            return False
+        try:
+            Draft202012Validator(call["response_schema"]).validate(json.loads(call["raw_output"]))
+            return True
+        except (ValueError, ValidationError):
+            return False
+    scores = {}
+    required = ["detection"]
+    if (metadata.get("detection") or {}).get("status") == "DIAGNOSED":
+        required.append("hypotheses")
+    for stage in required:
+        calls = [c for c in metadata.get("calls", []) if c.get("stage") == stage]
+        first, last = (calls[0], calls[-1]) if calls else ({}, {})
+        scores[stage] = dict(schema_valid=valid(last),
+            validator_valid=valid(last) and not last.get("error") and not last.get("validation_error"),
+            initial_schema_valid=valid(first),
+            initial_validator_valid=valid(first) and not first.get("error") and not first.get("validation_error"))
+    return scores
+
+
 def run_case(case, spec, gateway):
     role, scenario = case["role"], case["scenario"]
     spec = spec.model_copy(deep=True)
@@ -114,7 +137,8 @@ def run_case(case, spec, gateway):
     compiled = None
     if role == "analysis":
         result, meta = diagnose(spec, evidence, [], gateway=gateway)
-        actual, schema = result.status, ResponsePayload
+        actual = (meta.get("detection") or {}).get("status") or (result.status if result else "ERROR")
+        schema = ResponsePayload
     elif role == "planner":
         remaining, budget = 8, 800
         history = []
@@ -154,11 +178,14 @@ def run_case(case, spec, gateway):
                 if healthy
                 else [
                     Hypothesis(
-                        hypothesis_id="observed",
-                        cause="Learning needs investigation",
+                        hypothesis_id="observed" if rank == 1 else f"observed-{rank}",
+                        cause=cause,
                         evidence_epochs=evidence.epochs,
-                        confidence=0.6,
+                        rank=rank, confidence=0.6,
                     )
+                    for rank, cause in enumerate([
+                        "Learning rate may hinder progress", "Optimizer dynamics may be unstable",
+                        "Gradient magnitudes may hinder updates"], 1)
                 ]
             ),
             reason="Observed progress" if healthy else "Test alternatives",
@@ -178,11 +205,10 @@ def run_case(case, spec, gateway):
             history,
             2,
             remaining,
-            budget,
-            {"epoch_seconds": 20, "worker_overhead_seconds": 10, "safety_margin": 0.3},
             gateway=gateway,
         )
         meta["diagnosis_source"] = diagnosis_source
+        meta["controller_inputs"] = {"max_trials": spec.max_trials, "available_seconds": budget}
         actual, schema = "INVALID", ConfigPlanResponse
         if result is not None:
             try:
@@ -192,34 +218,41 @@ def run_case(case, spec, gateway):
                     spec.policy,
                     evidence.epochs,
                     remaining,
-                    {h.hypothesis_id for h in report.hypotheses},
+                    {h.hypothesis_id: h.rank for h in report.hypotheses},
                 )
+                actual = "NONEMPTY" if compiled.candidates else "EMPTY"
+                meta.update(proposed_count=len(compiled.candidates), approved_count=0, skipped_count=0,
+                            admission_outcome="NONE")
                 if compiled.candidates:
+                    cooldown = {}
                     for candidate in compiled.candidates:
                         if any(
-                            row["status"] == "REJECT"
+                            row["status"] in ("REJECT", "FAILED")
                             and row["base_config_hash"] == candidate.base_config_hash
                             and row["config_hash"] == candidate.config_hash
+                            and 2 - row["round_id"] <= spec.policy.cooldown_rounds
                             for row in history
                         ):
-                            raise ProposalError(
-                                "COOLDOWN",
-                                "Candidate repeats a recently rejected config",
-                            )
-                    admit_plan(
+                            cooldown[candidate.trial_id] = "Candidate repeats a recently rejected config"
+                    admission = admit_plan(
                         compiled,
-                        BudgetLedger(budget),
+                        BudgetLedger(max(1.0, budget), consumed=max(1.0, budget) - budget),
                         20,
                         10,
                         0.3,
-                        39 if compiled.verification_epochs < remaining else 0,
+                        remaining,
                         2,
                         current_config=spec.training,
                         train_samples=spec.train_samples,
+                        max_trials=spec.max_trials,
+                        cooldown_reasons=cooldown,
                     )
-                actual = "NONEMPTY" if compiled.candidates else "EMPTY"
+                    meta.update(admission=admission.model_dump(), approved_count=len(admission.approved),
+                                skipped_count=len(admission.skipped),
+                                admission_outcome=("FULL" if len(admission.approved) == len(compiled.candidates)
+                                                   else "PARTIAL" if admission.approved else "NONE"))
                 meta["compiled"] = compiled.model_dump()
-                meta["budget_feasible"] = True
+                meta["budget_feasible"] = bool(meta["approved_count"])
             except ProposalError as error:
                 meta.update(error=str(error), validation_error=error.as_dict())
     else:
@@ -267,6 +300,13 @@ def run_case(case, spec, gateway):
         except (ValueError, ValidationError):
             pass
     initial_semantic_valid = initial_schema_valid and not initial.get("error") and not initial.get("validation_error")
+    stage_scores = None
+    if role == "analysis" and meta.get("pipeline_version") == 2:
+        stage_scores = analysis_stage_scores(meta)
+        schema_valid = all(s["schema_valid"] for s in stage_scores.values())
+        semantic_valid = all(s["validator_valid"] for s in stage_scores.values()) and not meta.get("error")
+        initial_schema_valid = all(s["initial_schema_valid"] for s in stage_scores.values())
+        initial_semantic_valid = all(s["initial_validator_valid"] for s in stage_scores.values())
     correct = semantic_valid and (
         case["expected"] == "VALID" or actual == case["expected"]
     )
@@ -308,6 +348,9 @@ def run_case(case, spec, gateway):
         ),
         novel_numeric_proposals=novel,
         correct=correct,
+        **(dict(stage_scores=stage_scores,
+                detection_correct=actual == case["expected"],
+                diagnosis_ready=result is not None and result.status == "DIAGNOSED") if role == "analysis" else {}),
         **meta
     )
 
@@ -338,6 +381,10 @@ def summarize(records):
         "noop_count": sum((row.get("validation_error") or {}).get("code") == "NO_OP" for row in planners),
         "budget_rejected_count": sum((row.get("validation_error") or {}).get("code") == "INSUFFICIENT_BUDGET" for row in planners),
         "truncated_count": sum(row.get("finish_reason") == "length" for row in planners),
+    }
+    result["admission_outcomes"] = {
+        outcome.lower(): sum(row.get("admission_outcome") == outcome for row in planners)
+        for outcome in ("FULL", "PARTIAL", "NONE")
     }
     values = [r["latency_seconds"] for r in records]
     result["latency_seconds"] = {
@@ -416,7 +463,7 @@ def summarize(records):
         and result["autonomy"]["novel_numeric_proposals"] > 0
     )
     result["limitations"] = (
-        "Authored demo expectations; Planner VALID accepts valid abstention, while NONEMPTY requires an executable trial. Fixture/authored diagnoses test Planner independently, not Analysis quality or causal truth. Does not measure CIFAR generalization. Guard rejection tests are separate from model quality."
+        "Authored demo expectations; Planner VALID accepts valid abstention, while NONEMPTY requires compiler-valid proposals. Controller FULL/PARTIAL/NONE is scored separately. Fixture/authored diagnoses test Planner independently, not Analysis quality or causal truth. Does not measure CIFAR generalization. Guard rejection tests are separate from model quality."
     )
     result["quality_thresholds_met"] = (result["demo_thresholds_met"]
         and all(row["semantic_valid_rate"] is not None and row["semantic_valid_rate"] >= 0.95 for row in result["roles"].values())
