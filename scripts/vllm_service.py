@@ -19,6 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 from mas_demo.llm.health import (_inspect_vllm_process, _validated_argv, _validated_profile,
                                  verify_vllm_runtime, kernel_birth, same_process_birth)
+from mas_demo.llm.runtime_profile import profile_fingerprint, validate_runtime_qualification
 
 DATA = ROOT / "tmp/vllm"
 CURRENT = DATA / "runtime-manifest.json"
@@ -122,7 +123,7 @@ def linux_action(action, payload):
         assert_port_clear(profile["port"])
         directory.mkdir(parents=True, exist_ok=False)
         command = ["/bin/bash", str(ROOT / "scripts/wsl/start_vllm.sh"), str(profile["port"]), "1024", "0.65",
-                   "true" if profile.get("structured_outputs_config") else "false"]
+                   "true" if profile.get("structured_outputs_config") else "false", str(profile["max_model_len"])]
         with (directory / "server.log").open("ab", buffering=0) as log:
             child = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=log,
                                      stderr=subprocess.STDOUT, start_new_session=True)
@@ -275,14 +276,27 @@ def wait_for_port_release(manifest, port, timeout=5):
             time.sleep(0.1)
 
 
-def qualified_runtime():
+def qualified_runtime(profile):
+    lock_hash = hashlib.sha256((ROOT / "requirements-vllm.lock").read_bytes()).hexdigest()
+    fingerprint = profile_fingerprint(profile)
+    proof_path = DATA / "qualifications" / f"{fingerprint}.json"
+    if proof_path.exists():
+        proof_bytes = proof_path.read_bytes()
+        evidence = validate_runtime_qualification(profile, json.loads(proof_bytes), lock_hash)
+        return {**evidence, "qualification_reference": {
+            "profile_fingerprint": fingerprint, "sha256": hashlib.sha256(proof_bytes).hexdigest()}}
+    if profile["max_model_len"] != 4096:
+        raise RuntimeError("Profile-specific qualification is missing; run the context probe first")
     evidence_file = DATA / "task2-qualification.json"
     source = evidence_file if evidence_file.exists() else CURRENT
     evidence = json.loads(source.read_text(encoding="utf-8"))
     if (evidence.get("hardware_gate_passed") is not True
-        or hashlib.sha256((ROOT / "requirements-vllm.lock").read_bytes()).hexdigest()
-           != evidence.get("requirements_lock", {}).get("sha256")):
+        or lock_hash != evidence.get("requirements_lock", {}).get("sha256")):
         raise RuntimeError("Task2 qualification/lock is missing or changed")
+    if profile_fingerprint(evidence.get("profile", {})) != profile_fingerprint(profile):
+        raise RuntimeError("Legacy qualification profile mismatch")
+    if profile.get("structured_outputs_config") is not None:
+        raise RuntimeError("New compact starts require profile-specific probe qualification")
     if not evidence_file.exists():
         save(evidence_file, evidence)
     return evidence
@@ -294,7 +308,7 @@ def start(port, timeout):
     assert_port_clear(port)
     profile = validate_profile(json.loads((DATA / "launch-profile.json").read_text(encoding="utf-8")), port)
     profile["structured_outputs_config"] = {"backend": "xgrammar", "disable_any_whitespace": True}
-    qualification = qualified_runtime()
+    qualification = qualified_runtime(profile)
     if CURRENT.exists():
         previous = json.loads(CURRENT.read_text(encoding="utf-8"))
         if previous.get("ready") is True or previous.get("runtime_status") in ("starting", "stop_failed"):
@@ -306,6 +320,8 @@ def start(port, timeout):
         shutil.copyfile(CURRENT, directory / "previous-runtime-manifest.json")
     manifest = {"schema_version": 1, "task": 4, "distro": "MAS-vLLM", "run_id": run_id,
                 "runtime_status": "starting", "ready": False, "profile": profile}
+    if qualification.get("qualification_reference"):
+        manifest["qualification"] = qualification["qualification_reference"]
     save(CURRENT, manifest)
     started = time.monotonic()
     try:

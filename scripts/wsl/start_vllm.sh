@@ -11,6 +11,8 @@ port=${1:-8001}
 batch_tokens=${2:-1024}
 memory_fraction=${3:-0.65}
 compact_json=${4:-false}
+context_tokens=${5:-4096}
+[[ "$context_tokens" == 4096 || "$context_tokens" == 8192 ]] || exit 2
 [[ "$compact_json" == true || "$compact_json" == false ]] || exit 2
 decoder_args=()
 if [[ "$compact_json" == true ]]; then
@@ -25,7 +27,7 @@ exec /opt/mas-vllm/venv/bin/vllm serve Qwen/Qwen3.5-0.8B \
     --served-model-name Qwen/Qwen3.5-0.8B \
     --host 127.0.0.1 --port "$port" \
     --dtype float16 --language-model-only \
-    --max-model-len 4096 --max-num-seqs 1 \
+    --max-model-len "$context_tokens" --max-num-seqs 1 \
     --max-num-batched-tokens "$batch_tokens" \
     --tensor-parallel-size 1 --enforce-eager \
     --gpu-memory-utilization "$memory_fraction" \

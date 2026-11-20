@@ -14,7 +14,7 @@ def verify_round(
     current_config = current_config or spec.training
     if fork.config_hash != config_hash(current_config):
         raise ValueError("Fork/config hash mismatch")
-    if not admission.approved or any(
+    if not admission.approved or admission.control_key is None or any(
         c.base_config_hash != fork.config_hash for c in admission.approved
     ):
         raise ValueError("Candidates are not based on the active fork config")
@@ -28,7 +28,11 @@ def verify_round(
         ledger.reservations[admission.control_key],
         training_config=current_config,
     )
+    control_limit = ledger.reservations[admission.control_key]
     ledger.settle(admission.control_key, control.seconds)
+    if control.seconds > control_limit:
+        control = control.model_copy(update={"status": "BUDGET_EXHAUSTED",
+            "error": f"Control exceeded its {control_limit:g}s reservation; charged {control.seconds:g}s"})
     result = VerificationRoundResult(
         comparison_epoch=fork.epoch + admission.horizon, fork_ref=fork, control=control
     )
@@ -50,7 +54,11 @@ def verify_round(
                 ledger.reservations[key],
                 training_config=candidate.training_config,
             )
+            trial_limit = ledger.reservations[key]
             ledger.settle(key, part.seconds)
+            if part.seconds > trial_limit:
+                part = part.model_copy(update={"status": "BUDGET_EXHAUSTED",
+                    "error": f"Trial exceeded its {trial_limit:g}s reservation; charged {part.seconds:g}s"})
         result.trials[candidate.trial_id] = part
         write_json(directory / "result.json", result)
     if admission.continuation_key:

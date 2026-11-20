@@ -17,27 +17,30 @@ def plan_with_agent(
     history,
     round_id,
     remaining_epochs,
-    remaining_budget_seconds,
-    cost_estimate,
     gateway=None,
     previous_response=None,
     validation_errors=None,
 ):
     gateway = gateway or create_gateway(spec)
+    history_fields = {"round_id", "base_config_hash", "config_hash", "proposal_id", "hypothesis_id",
+                      "hypothesis_rank", "status", "diff", "gain", "seconds", "verification_epochs",
+                      "comparison_epoch"}
+    experiment_history = [{key: value for key, value in row.items() if key in history_fields}
+                          for row in history if row.get("status") in ("ACCEPT", "REJECT", "FAILED", "NOT_EXECUTED")]
     payload = {
         "schema_version": 3,
         "task": task_description(spec),
-        "diagnosis": diagnosis.model_dump() if diagnosis else None,
+        # The hypotheses retain causes, confidence and evidence references;
+        # Analysis's long prose remains in its own log instead of being repeated.
+        "diagnosis": diagnosis.model_dump(exclude={"mode", "reason"}) if diagnosis else None,
         "evidence": evidence.model_dump(exclude={"signals"}),
         "current_config": current_config.model_dump(),
         "base_config_hash": config_hash(current_config),
         "capabilities": capabilities,
-        "history": sorted(history, key=lambda row: row.get("round_id", 0))[-4:],
+        "history": sorted(experiment_history, key=lambda row: row.get("round_id", 0))[-4:],
         "round_id": round_id,
         "remaining_epochs": remaining_epochs,
-        "remaining_budget_seconds": remaining_budget_seconds,
-        "cost_estimate": cost_estimate,
-        "max_trials": spec.max_trials,
+        "required_trial_count": len(diagnosis.hypotheses) if diagnosis and diagnosis.status == "DIAGNOSED" else 0,
         "comparison_protocol": "Same complete epochs from same fork for control and all trials.",
     }
     if validation_errors is not None:

@@ -7,6 +7,9 @@ from pathlib import Path
 import subprocess
 from urllib.parse import urlsplit
 import httpx
+from mas_demo.llm.runtime_profile import (
+    MODEL, profile_fingerprint, validate_serving_profile, validate_runtime_qualification,
+)
 
 
 # Fixed read-only program. Manifest values travel as JSON stdin, never shell code.
@@ -82,23 +85,9 @@ def _inspect_vllm_process(pid, port):
 
 def _validated_profile(profile, gateway):
     """Only the Task2-qualified checkpoint/profile can confer provenance."""
-    expected = {
-        "model": "Qwen/Qwen3.5-0.8B",
-        "revision": "2fc06364715b967f1860aea9cf38778875588b17",
-        "tokenizer_revision": "2fc06364715b967f1860aea9cf38778875588b17",
-        "dtype": "float16", "quantization": None, "language_model_only": True,
-        "max_model_len": 4096, "max_num_seqs": 1, "max_num_batched_tokens": 1024,
-        "tensor_parallel_size": 1, "enforce_eager": True, "gpu_memory_utilization": 0.65,
-        "generation_config": "vllm", "chat_template_kwargs": {"enable_thinking": False},
-        "host": "127.0.0.1",
-    }
-    if not isinstance(profile, dict) or any(profile.get(k) != v for k, v in expected.items()):
-        raise ValueError("Unqualified vLLM runtime profile")
-    decoder = profile.get("structured_outputs_config")
-    if decoder is not None and decoder != {"backend": "xgrammar", "disable_any_whitespace": True}:
-        raise ValueError("Unqualified structured output configuration")
+    profile = validate_serving_profile(profile)
     endpoint = urlsplit(gateway.base_url)
-    if (gateway.model != expected["model"] or endpoint.scheme != "http"
+    if (gateway.model != MODEL or endpoint.scheme != "http"
         or endpoint.hostname not in ("127.0.0.1", "localhost") or endpoint.path != "/v1"
         or endpoint.username or endpoint.password or endpoint.query or endpoint.fragment
         or type(profile.get("port")) is not int or not 1 <= profile["port"] <= 65535
@@ -144,6 +133,20 @@ def verify_vllm_runtime(gateway):
             or manifest.get("distro") != "MAS-vLLM"):
             raise ValueError("vLLM runtime manifest is not ready")
         profile = _validated_profile(manifest["profile"], gateway)
+        qualification = None
+        if profile["max_model_len"] == 8192 or manifest.get("qualification"):
+            import hashlib
+            root = Path(__file__).resolve().parents[3]
+            fingerprint = profile_fingerprint(profile)
+            proof_path = root / "tmp/vllm/qualifications" / f"{fingerprint}.json"
+            proof_bytes = proof_path.read_bytes()
+            reference = manifest.get("qualification") or {}
+            if (reference.get("profile_fingerprint") != fingerprint
+                or reference.get("sha256") != hashlib.sha256(proof_bytes).hexdigest()):
+                raise ValueError("Runtime qualification reference mismatch")
+            qualification = validate_runtime_qualification(
+                profile, json.loads(proof_bytes),
+                hashlib.sha256((root / "requirements-vllm.lock").read_bytes()).hexdigest())
         identity = manifest["process"]
         if (not isinstance(identity, dict) or type(identity.get("pid")) is not int
             or identity["pid"] <= 1 or identity.get("process_group") != identity["pid"]
@@ -170,6 +173,9 @@ def verify_vllm_runtime(gateway):
                    for item in listeners)):
             raise ValueError("vLLM port is not owned by the verified process group")
         versions = manifest["versions"]
+        if qualification and (versions != qualification["versions"]
+                              or manifest.get("torch_cuda") != qualification["torch_cuda"]):
+            raise ValueError("Runtime packages differ from qualified profile")
         if (not isinstance(versions, dict) or any(not isinstance(versions.get(k), str) or not versions[k]
               for k in ("vllm", "torch", "transformers", "triton"))
             or versions != observed.get("versions") or not manifest.get("torch_cuda")

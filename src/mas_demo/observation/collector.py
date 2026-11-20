@@ -1,9 +1,9 @@
 from mas_demo.contracts import EvidenceWindow
 
 
-def build_evidence(events, branch_id, window=2):
+def build_evidence(events, branch_id, window=2, *, selected_lineage=False):
     """Collect observed metrics; anomaly detection belongs to the Analysis LLM."""
-    own = sorted((e for e in events if e.branch_id == branch_id), key=lambda e: e.epoch)
+    own = sorted((e for e in events if selected_lineage or e.branch_id == branch_id), key=lambda e: e.epoch)
     recent = own[-window:]
     quality = []
     if any(e.peak_vram_mb is None for e in recent):

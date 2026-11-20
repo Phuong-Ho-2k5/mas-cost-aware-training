@@ -21,7 +21,7 @@ training:
   gradient_accumulation: 1
   scheduler: none
 policy:
-  max_epochs: 200
+  max_epochs: 20
   max_trials: 3
   budget_seconds: 600
   epoch_seconds_estimate: 2

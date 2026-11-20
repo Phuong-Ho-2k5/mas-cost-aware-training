@@ -1,7 +1,7 @@
 """Protocol v3: autonomous proposals and one shared verification horizon."""
 
 from typing import Literal
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator, StrictStr, StrictInt, StrictFloat
 
 
 class Record(BaseModel):
@@ -180,12 +180,88 @@ class EvidenceWindow(Record):
 
 class AnalysisHypothesis(Record):
     hypothesis_id: str
+    rank: int = Field(ge=1, le=3, strict=True)
     cause: str
     evidence_epochs: list[int]
     confidence: float = Field(ge=0, le=1)
 
 
 Hypothesis = AnalysisHypothesis
+
+
+class ObservationFact(Record):
+    fact_id: str
+    metric: Literal["train_loss", "val_loss", "val_accuracy", "grad_norm"]
+    kind: Literal["value", "step_delta", "window_delta", "pattern"]
+    epochs: list[int]
+    value: float | None = None
+    direction: Literal["up", "down", "flat"] | None = None
+    pattern: Literal["insufficient", "incomplete", "mixed", "nondecreasing", "nonincreasing", "flat"] | None = None
+
+    @model_validator(mode="after")
+    def consistent_fact(self):
+        if not self.epochs or len(self.epochs) != len(set(self.epochs)):
+            raise ValueError("Fact requires distinct evidence epochs")
+        if self.kind == "pattern":
+            if self.pattern is None or self.value is not None or self.direction is not None:
+                raise ValueError("Pattern fact requires only a pattern")
+        elif self.value is None or self.pattern is not None:
+            raise ValueError("Numeric fact requires a value and no pattern")
+        elif self.kind == "value":
+            if len(self.epochs) != 1 or self.direction is not None:
+                raise ValueError("Value fact has one epoch and no direction")
+        elif len(self.epochs) != 2 or self.direction is None:
+            raise ValueError("Delta fact requires two epochs and a direction")
+        return self
+
+
+class DetectionResponse(Record):
+    status: Literal["DIAGNOSED", "ABSTAIN"]
+    observation_ids: list[str] = Field(max_length=4)
+    reason: str = Field(min_length=1, max_length=240)
+
+
+class ConfigFact(Record):
+    field: str
+    value: StrictStr | StrictInt | StrictFloat | None
+    active: bool
+
+
+class ConfigClaim(Record):
+    field: str
+    observed_value: StrictStr | StrictInt | StrictFloat | None
+    claim: Literal["active_effect", "missing_effect", "setting"]
+
+
+class GeneratedHypothesis(AnalysisHypothesis):
+    hypothesis_id: str = Field(min_length=1, max_length=48)
+    cause: str = Field(min_length=1, max_length=160)
+    mechanism: str = Field(min_length=1, max_length=120)
+    observation_ids: list[str] = Field(min_length=1, max_length=4)
+    config_claims: list[ConfigClaim] = Field(max_length=4)
+
+
+class HypothesesResponse(Record):
+    hypotheses: list[GeneratedHypothesis] = Field(min_length=3, max_length=3)
+    reason: str = Field(min_length=1, max_length=160)
+
+
+class EpochLogDetectionResponse(Record):
+    status: Literal["DIAGNOSED", "ABSTAIN"]
+    evidence_epochs: list[int] = Field(max_length=8)
+    reason: str = Field(min_length=1, max_length=240)
+
+
+class EpochLogHypothesis(AnalysisHypothesis):
+    hypothesis_id: str = Field(min_length=1, max_length=48)
+    cause: str = Field(min_length=1, max_length=160)
+    mechanism: str = Field(min_length=1, max_length=120)
+    config_claims: list[ConfigClaim] = Field(max_length=4)
+
+
+class EpochLogHypothesesResponse(Record):
+    hypotheses: list[EpochLogHypothesis] = Field(min_length=3, max_length=3)
+    reason: str = Field(min_length=1, max_length=160)
 
 
 class DiagnosisReport(Record):
@@ -232,6 +308,7 @@ class CompiledProposal(Record):
     config_hash: str
     diff: dict
     evidence_epochs: list[int]
+    hypothesis_rank: int | None = Field(None, ge=1, le=3, strict=True)
 
 
 class CompiledPlan(Record):
@@ -250,13 +327,44 @@ class EvalVerdict(EvaluationResponse):
     gain: float | None = None
 
 
+class TrialCostQuote(Record):
+    trial_id: str
+    proposal_id: str
+    hypothesis_id: str
+    hypothesis_rank: int = Field(ge=1, le=3, strict=True)
+    epoch_seconds: float = Field(gt=0)
+    reserved_seconds: float = Field(gt=0)
+
+
+class PlanCostQuote(Record):
+    horizon: int = Field(gt=0, strict=True)
+    control_seconds: float = Field(gt=0)
+    continuation_seconds: float = Field(ge=0)
+    trial_costs: dict[str, TrialCostQuote]
+    all_trials_total_seconds: float = Field(gt=0)
+
+
+class SkippedTrial(Record):
+    trial_id: str
+    proposal_id: str
+    hypothesis_id: str
+    hypothesis_rank: int = Field(ge=1, le=3, strict=True)
+    estimated_seconds: float = Field(gt=0)
+    code: Literal["SKIPPED_BUDGET", "SKIPPED_POLICY", "SKIPPED_COOLDOWN"]
+    reason: str
+
+
 class AdmissionBatch(Record):
     round_id: int
     horizon: int
-    control_key: str
+    control_key: str | None
     approved: list[CompiledProposal]
     reservation_keys: dict[str, str]
     continuation_key: str | None = None
+    skipped: list[SkippedTrial] = Field(default_factory=list)
+    cost_quote: PlanCostQuote | None = None
+    budget_available_before: float | None = None
+    reserved_total_seconds: float = 0
 
 
 class VerificationRoundResult(Record):

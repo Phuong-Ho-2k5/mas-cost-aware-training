@@ -96,14 +96,38 @@ def compile_proposal(current, proposal, capabilities=None):
 
 
 def compile_plan(
-    current, response, policy, evidence_epochs, remaining_epochs, hypothesis_ids=None
+    current, response, policy, evidence_epochs, remaining_epochs, hypothesis_ranks
 ):
-    if len(response.proposals) > policy.max_trials:
-        raise ProposalError(
-            "MAX_TRIALS", "Plan exceeds trial limit", limit=policy.max_trials
-        )
     if not response.proposals:
+        if hypothesis_ranks:
+            raise ProposalError("HYPOTHESIS_COVERAGE", "A diagnosed set requires one trial per ranked hypothesis")
+        reason = response.reason.strip()
+        if not reason or (reason.startswith("<") and reason.endswith(">")):
+            raise ProposalError(
+                "INVALID_ABSTENTION_REASON",
+                "State a concrete blocker from the inputs, not a placeholder; otherwise provide the complete trial plan",
+            )
         return CompiledPlan(candidates=[], verification_epochs=None)
+    if (not isinstance(hypothesis_ranks, dict) or len(hypothesis_ranks) != 3
+        or any(type(rank) is not int for rank in hypothesis_ranks.values())
+        or set(hypothesis_ranks.values()) != {1, 2, 3}):
+        raise ProposalError("INVALID_HYPOTHESIS_RANK", "Expected three distinct Analysis ranks")
+    if hypothesis_ranks is not None:
+        required = set(hypothesis_ranks)
+        assigned = [proposal.hypothesis_id for proposal in response.proposals]
+        unknown = set(assigned) - required
+        if unknown:
+            raise ProposalError(
+                "UNKNOWN_HYPOTHESIS", "Unavailable hypothesis", hypothesis_ids=sorted(unknown)
+            )
+        if len(assigned) != len(required) or set(assigned) != required:
+            raise ProposalError(
+                "HYPOTHESIS_COVERAGE",
+                "Provide exactly one distinct trial per hypothesis, or abstain from the entire plan",
+                required_hypothesis_ids=sorted(required),
+                received_hypothesis_ids=assigned,
+                missing_hypothesis_ids=sorted(required - set(assigned)),
+            )
     if not 1 <= response.verification_epochs <= remaining_epochs:
         raise ProposalError(
             "INVALID_HORIZON",
@@ -114,13 +138,12 @@ def compile_plan(
     for index, proposal in enumerate(response.proposals, 1):
         if proposal.proposal_id in seen_ids:
             raise ProposalError("DUPLICATE_ID", "Repeated proposal identifier")
-        if hypothesis_ids is not None and proposal.hypothesis_id not in hypothesis_ids:
-            raise ProposalError("UNKNOWN_HYPOTHESIS", "Unavailable hypothesis")
         if not proposal.patch.evidence_epochs or not set(
             proposal.patch.evidence_epochs
         ) <= set(evidence_epochs):
             raise ProposalError("UNAVAILABLE_EVIDENCE", "Unavailable evidence epochs")
         compiled = compile_proposal(current, proposal)
+        compiled.hypothesis_rank = hypothesis_ranks[proposal.hypothesis_id]
         if compiled.config_hash in seen_hashes:
             raise ProposalError(
                 "DUPLICATE_CONFIG", "Proposals produce the same configuration"

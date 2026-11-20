@@ -43,7 +43,10 @@ def evaluate_with_agent(
             "evaluation",
             {
                 "schema_version": 3,
-                "candidate_configs": candidates or {},
+                "candidate_configs": {
+                    name: config for name, config in (candidates or {}).items()
+                    if base is not None and snapshots.get(name) is not None
+                },
                 "verification_epochs": verification_epochs,
                 "comparison_epoch": comparison_epoch,
                 "min_gain": spec.min_gain,

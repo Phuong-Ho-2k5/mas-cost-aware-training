@@ -46,15 +46,17 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/stop_vllm.ps1
    gradient và quan sát theo epoch. Config/data chỉ hỗ trợ giải thích nguyên
    nhân có thể xảy ra, không tự quyết định status. `DIAGNOSED` là giả thuyết có
    evidence cần kiểm chứng; `ABSTAIN` là logs bình thường hoặc chưa đủ căn cứ.
-3. Planner nhận diagnosis, cấu hình đang active, capabilities, lịch sử và tài
-   nguyên còn lại. Nó tự chọn từ 0 đến `policy.max_trials` trial. **Giá trị 3 là
-   trần, không phải số trial bắt buộc.**
+3. Analysis trả ba hypothesis có rank duy nhất 1–3 khi `DIAGNOSED`; rank 1 được
+   ưu tiên kiểm chứng trước. Planner nhận diagnosis và đề xuất đúng một trial
+   cho mỗi hypothesis, tổng cộng ba cấu hình khác nhau. Planner không duyệt ngân sách.
 4. Mỗi proposal là patch tối thiểu: `changes` chỉ chứa giá trị thực sự khác
    `current_config`. Planner chọn một `verification_epochs` chung cho control
    và mọi trial, không vượt số epoch còn lại.
-5. Compiler kiểm cấu hình và admission reserve toàn bộ ngân sách trước khi chạy.
-   Plan bị từ chối được gửi lại cho Planner sửa tối đa một lần. Code không tự bỏ
-   trial, rút horizon hoặc tạo giá trị thay cho LLM.
+5. Compiler kiểm cấu hình và gắn rank từ Analysis qua hypothesis_id. Controller
+   ước tính giây, xét rank/cooldown/ngân sách và chọn 0–3 trial; `policy.max_trials`
+   là trần số trial thực thi. Trial quá đắt được bỏ qua rồi xét hạng sau. Chỉ giữ
+   chỗ cho nhóm được chọn, cùng một control và phần tiếp tục. Code không rút
+   horizon hoặc sửa patch. Chỉ lỗi proposal được gửi Planner sửa một lần.
 6. Control/trial bắt đầu từ cùng checkpoint và chạy cùng số epoch. Evaluation
    chỉ so snapshot tại đúng comparison epoch; nhánh chưa đủ horizon không được promote.
 7. Nhánh được chọn tiếp tục với config, optimizer/scheduler/RNG và revision/hash
@@ -117,14 +119,15 @@ có bật `core.autocrlf`, để Bash chạy đúng và lock hash không đổi 
 
 Profile serving đã khóa: Qwen3.5-0.8B revision
 `2fc06364715b967f1860aea9cf38778875588b17`, FP16, không lượng tử hóa, context
-4096, `max_num_seqs=1`, batch token 1024, GPU memory utilization 0.65, thinking
+4096 hoặc 8192 theo profile đã kiểm chứng, `max_num_seqs=1`, batch token 1024,
+GPU memory utilization 0.65, thinking
 tắt và compact JSON qua XGrammar. `scripts/wsl/start_vllm.sh` dùng cache offline;
 snapshot model phải được tải đầy đủ trước khi chạy probe.
 
 Probe checkpoint chạy riêng cổng 8001, dùng output directory mới:
 
 ```powershell
-wsl -d MAS-vLLM -u root --exec env HF_HOME=/opt/mas-vllm/cache/huggingface XDG_CACHE_HOME=/opt/mas-vllm/cache TMPDIR=/opt/mas-vllm/tmp /opt/mas-vllm/venv/bin/python /mnt/d/HK261/MAS/scripts/check_vllm_qwen.py --launch --gpu-memory-utilization 0.65 --output /opt/mas-vllm/probes/new-run-name
+wsl -d MAS-vLLM -u root --exec env HF_HOME=/opt/mas-vllm/cache/huggingface XDG_CACHE_HOME=/opt/mas-vllm/cache TMPDIR=/opt/mas-vllm/tmp /opt/mas-vllm/venv/bin/python /mnt/d/HK261/MAS/scripts/check_vllm_qwen.py --launch --context-tokens 8192 --gpu-memory-utilization 0.65 --publish-qualification --output /opt/mas-vllm/probes/new-run-name
 ```
 
 Probe ghi `probe.json`, snapshot hashes, responses, resources và server log;
@@ -132,11 +135,13 @@ khi kết thúc dừng nhóm process do nó tạo. Nạp được weights chưa 
 context, structured output hoặc khả năng hủy request hoạt động.
 
 **Clone mới chưa có đủ dữ liệu để gọi start ngay.** Lifecycle cần các file local
-`tmp/vllm/launch-profile.json` và `tmp/vllm/task2-qualification.json` từ môi trường
-đã qualification, có lock hash và package metadata khớp. `qualified_runtime()`
-có thể lấy qualification từ manifest cũ tương thích khi file riêng chưa tồn tại.
-Setup/probe hiện chưa tự đưa toàn bộ dữ liệu này vào lifecycle launcher; chúng
-không phải file mẫu được commit. Đây là workflow cho profile máy đã chuẩn bị,
+`tmp/vllm/launch-profile.json` và bằng chứng đúng profile tại
+`tmp/vllm/qualifications/<fingerprint>.json`, với lock hash/package metadata khớp.
+Probe chỉ xuất bằng chứng khi đạt toàn bộ check và dừng sạch process do nó tạo.
+Sau đó cập nhật launch-profile từ profile trong bằng chứng; không đổi riêng số
+context hoặc sửa manifest thành ready. Bằng chứng 4096 không duyệt được 8192;
+legacy receipt vẫn dừng được server cũ nhưng không duyệt decoder compact mới.
+Các file này không được commit. Đây là workflow cho profile máy đã chuẩn bị,
 chưa phải trình cài vLLM portable cho mọi máy.
 
 Start chờ ready tối đa 600 giây rồi trả quyền điều khiển, để server chạy background.
@@ -189,7 +194,9 @@ output LLM chưa có nghĩa đã được chạy:
 | `planning` | Raw/parsed proposal cùng metadata của Planner. |
 | `plan_rejected` + `NO_OP` | Patch không đổi cấu hình hiện tại. |
 | `DUPLICATE_CONFIG` | Nhiều proposal tạo cùng một cấu hình. |
-| `INSUFFICIENT_BUDGET` | Không reserve được toàn bộ control/trial/continuation. |
+| `admission` | Chi phí, rank, nhóm trial được duyệt và lý do bỏ qua từng trial. |
+| `SKIPPED_BUDGET` | Thêm trial này vào nhóm sẽ vượt ngân sách; xét tiếp hạng sau. |
+| `SKIPPED_POLICY` / `SKIPPED_COOLDOWN` | Trial bị bỏ vì trần thực thi hoặc lịch sử gần đây. |
 | `trial_plan` | Plan đã qua compiler/admission; bắt đầu đường verification. |
 | `decision` + `NOOP` | Vòng đó tiếp tục main, không có plan được nhận. |
 
@@ -202,6 +209,28 @@ sai schema hoặc mâu thuẫn được repair một lần trên cùng evidence;
 không bị ép gọi lại. `metadata.calls` giữ từng phản hồi và chi phí tổng.
 
 ## Prompt, schema và context
+
+Analysis có hai bước nội bộ, đều nhận nguyên các bản ghi epoch trong cửa sổ logs
+(config window mặc định 5), không lọc còn bốn metric hoặc thêm bảng facts/trends.
+Các field null, telemetry, thông số và branch_id worker được giữ nguyên. Detection
+không nhận current_config riêng; hypotheses được bổ sung cấu hình thực tế để giải
+thích nguyên nhân. Hai bước viện dẫn bằng evidence_epochs, không cần hash quan sát.
+Payload đã gửi nằm trong metadata.calls[].input_payload. Khi detection ABSTAIN hợp lệ, không gọi
+bước nguyên nhân. Khi sinh hypothesis lỗi, `diagnosis` là null và metadata giữ
+detection cùng `outcome=hypothesis_generation_failed`; Planner không chạy trong
+vòng đó. Dashboard phân biệt trường hợp này với training bình thường. Metadata
+giữ từng call/stage và cộng chi phí đúng một lần; mỗi bước sửa output tối đa một lần.
+
+Replay trên evidence cố định, không chạy worker:
+
+```powershell
+.\.venv\Scripts\python.exe scripts/replay_analysis.py --input src/mas_demo/llm/scenarios/analysis_replay_cases.json --repeat 1 --output "artifacts/analysis-replay-$(Get-Date -Format yyyyMMdd-HHmmss)"
+```
+
+Đọc `responses.jsonl`, `report.json` và chấm nội dung hypothesis. Ca live không có
+nhãn không được tính là classification đúng/sai. `manual_review_pending` nhắc rằng
+schema/validator chưa chứng minh ba cơ chế khác nhau hay đúng nhân quả. Hai bước
+có thể tốn thêm tokens/thời gian; không thay đổi ngân sách worker để bù chi phí này.
 
 Xem [README của prompts](src/mas_demo/prompts/README.md) để biết cách ghép prompt
 cho từng role. Prompt được đọc lại mỗi request, không cần restart vLLM khi chỉ sửa text.
@@ -216,43 +245,37 @@ output reserve phải vừa context. Gateway có thể bỏ history cũ hoặc t
 output trước; giữ nguyên metrics/evidence và ghi `context_compaction`. Không còn
 chỗ thì chặn generation. Sửa code server khác với sửa prompt: code server cần restart.
 
-## Kiểm thử và đánh giá
+## Đánh giá agent local
 
-Đặt thư mục tạm trên D vì các guard Windows yêu cầu dữ liệu kiểm tra ở ổ này:
-
-```powershell
-$env:TEMP = "$PWD\tmp\pytest"
-$env:TMP = $env:TEMP
-New-Item -ItemType Directory -Force -Path $env:TEMP | Out-Null
-.\.venv\Scripts\python.exe -m pytest -q
-```
-
-Suite mặc định dùng HTTP stand-in và kiểm tra ownership/process; không tự chạy
-benchmark model thật hoặc tạo distro.
+Dữ liệu cho benchmark/replay nằm trong `src/mas_demo/llm/scenarios/` và được đóng
+gói cùng chương trình. Các lệnh dưới đây gọi model thật khi runtime đang sẵn sàng.
 
 Khi vLLM đang ready, kiểm ba role hoặc một nhóm Planner nhỏ:
 
 ```powershell
 .\.venv\Scripts\python.exe scripts/check_local_agents.py --output "artifacts/agent-check-$(Get-Date -Format yyyyMMdd-HHmmss)"
-.\.venv\Scripts\python.exe scripts/benchmark_local_agents.py --rounds 1 --cases tests/fixtures/planner_recovery_cases.json --case-ids p-recovery-unstable p-recovery-healthy p-recovery-budget --output "artifacts/planner-check-$(Get-Date -Format yyyyMMdd-HHmmss)"
+.\.venv\Scripts\python.exe scripts/benchmark_local_agents.py --rounds 1 --cases src/mas_demo/llm/scenarios/planner_recovery_cases.json --case-ids p-recovery-unstable p-recovery-healthy p-recovery-budget --output "artifacts/planner-check-$(Get-Date -Format yyyyMMdd-HHmmss)"
 ```
 
 Benchmark lưu warmup riêng, không chấm vào kết quả. Đọc `report.json` và raw
 responses; benchmark CLI hiện không dùng exit code để báo mọi lỗi chất lượng.
-`VALID` chấp nhận abstain hợp lệ, còn `NONEMPTY` đòi trial qua compiler/admission.
+`VALID` chấp nhận abstain hợp lệ, còn `NONEMPTY` đòi ba proposal qua compiler.
+Kết quả controller được báo riêng qua `admission_outcome`: FULL, PARTIAL hoặc NONE;
+không đủ ngân sách để chạy không tự làm proposal hợp lệ thành lỗi của Planner.
 Fixture diagnosis kiểm Planner riêng, không chứng minh Analysis đúng. Nhóm case
 nhỏ không thể làm full quality gate thành true.
 
-`planner_outcomes` báo số trial/abstain hợp lệ, NO_OP, budget rejection và output
-bị cắt. Model vẫn có thể chẩn đoán sai, tạo trial trùng hoặc không khả thi; JSON
+`planner_outcomes` báo proposal/abstain hợp lệ, NO_OP và output bị cắt;
+`admission_outcomes` đếm số kế hoạch được chạy toàn bộ, một phần hoặc không chạy.
+Model vẫn có thể chẩn đoán sai, tạo trial trùng hoặc không khả thi; JSON
 hợp lệ chưa chứng minh cải thiện training. Kiểm tra trước/sau prompt đã có ca sinh
 patch mới qua admission, nhưng ca budget thấp còn bị từ chối vì proposal trùng.
 
 `compare_local_training.py` phục vụ paired pilot; chạy riêng với benchmark
-inference để tránh tranh tài nguyên. Unit tests/mock pass chỉ xác nhận cơ chế,
+inference để tránh tranh tài nguyên. HTTP stand-in chỉ xác nhận cơ chế,
 không thay cho đo chất lượng ML. Script `check_vllm_simulation.py` là công cụ
 Postman tùy chọn, cần CLI và tài nguyên local `postman/` vốn được Git bỏ qua;
-nó không phải điều kiện để chạy training hoặc pytest thông thường.
+nó không phải điều kiện để chạy training thông thường.
 
 ## Stop, resume và migration
 
