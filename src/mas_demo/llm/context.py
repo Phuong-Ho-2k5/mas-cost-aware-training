@@ -81,7 +81,7 @@ async def fit_local_context(client, base_url, body, metadata, headers, backend="
                     else []
                 ),
                 "instruction": (
-                    "Trả đầy đủ ba hypothesis đã sửa, dùng detection đã khóa, evidence và validation_errors. Không đổi status của detection."
+                    "Trả một đến ba hypothesis khác nhau đã sửa, dùng detection đã khóa, evidence và validation_errors. Không đổi status của detection; không nhân bản để đủ ba."
                     if schema_name == "training_hypotheses" else
                     "Trả kết quả detection đã sửa đầy đủ, dựa trên evidence và validation_errors; tự chọn status phù hợp logs."
                     if schema_name == "training_detection" else

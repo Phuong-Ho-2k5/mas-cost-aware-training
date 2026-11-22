@@ -38,7 +38,7 @@ class Capture:
         self.gateway = gateway
         fixture = Path(fixture) if fixture else Path(__file__).resolve().parent / "scenarios/config_agent_cases.json"
         sources = list((ROOT / "src/mas_demo").rglob("*.py")) + list((ROOT / "src/mas_demo/prompts").glob("*.txt"))
-        sources += [ROOT / "scripts" / name for name in ("benchmark_local_agents.py", "benchmark_config_agent.py", "check_local_agents.py", "compare_local_training.py", "replay_analysis.py")]
+        sources += [ROOT / "scripts" / name for name in ("benchmark_local_agents.py", "benchmark_config_agent.py", "check_local_agents.py", "compare_local_training.py", "replay_analysis.py", "replay_round.py")]
         self.manifest = {"schema_version": 1, "state": "running", "model": gateway.model,
             "backend": gateway.local_backend, "endpoint": gateway.base_url,
             "gateway": {name: getattr(gateway, name) for name in ("timeout", "deadline", "attempts", "max_tokens")},

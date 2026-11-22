@@ -108,10 +108,10 @@ def compile_plan(
                 "State a concrete blocker from the inputs, not a placeholder; otherwise provide the complete trial plan",
             )
         return CompiledPlan(candidates=[], verification_epochs=None)
-    if (not isinstance(hypothesis_ranks, dict) or len(hypothesis_ranks) != 3
+    if (not isinstance(hypothesis_ranks, dict) or not 1 <= len(hypothesis_ranks) <= 3
         or any(type(rank) is not int for rank in hypothesis_ranks.values())
-        or set(hypothesis_ranks.values()) != {1, 2, 3}):
-        raise ProposalError("INVALID_HYPOTHESIS_RANK", "Expected three distinct Analysis ranks")
+        or set(hypothesis_ranks.values()) != set(range(1, len(hypothesis_ranks) + 1))):
+        raise ProposalError("INVALID_HYPOTHESIS_RANK", "Expected one to three hypotheses with distinct Analysis ranks 1..N")
     if hypothesis_ranks is not None:
         required = set(hypothesis_ranks)
         assigned = [proposal.hypothesis_id for proposal in response.proposals]
@@ -123,7 +123,7 @@ def compile_plan(
         if len(assigned) != len(required) or set(assigned) != required:
             raise ProposalError(
                 "HYPOTHESIS_COVERAGE",
-                "Provide exactly one distinct trial per hypothesis, or abstain from the entire plan",
+                "Provide exactly one distinct trial per retained hypothesis",
                 required_hypothesis_ids=sorted(required),
                 received_hypothesis_ids=assigned,
                 missing_hypothesis_ids=sorted(required - set(assigned)),
@@ -134,7 +134,7 @@ def compile_plan(
             "Shared epoch count exceeds remaining epochs",
             remaining_epochs=remaining_epochs,
         )
-    candidates, seen_ids, seen_hashes = [], set(), set()
+    candidates, seen_ids, config_groups = [], set(), {}
     for index, proposal in enumerate(response.proposals, 1):
         if proposal.proposal_id in seen_ids:
             raise ProposalError("DUPLICATE_ID", "Repeated proposal identifier")
@@ -144,14 +144,19 @@ def compile_plan(
             raise ProposalError("UNAVAILABLE_EVIDENCE", "Unavailable evidence epochs")
         compiled = compile_proposal(current, proposal)
         compiled.hypothesis_rank = hypothesis_ranks[proposal.hypothesis_id]
-        if compiled.config_hash in seen_hashes:
-            raise ProposalError(
-                "DUPLICATE_CONFIG", "Proposals produce the same configuration"
-            )
+        group = config_groups.setdefault(compiled.config_hash, dict(
+            config_hash=compiled.config_hash, proposal_ids=[], hypothesis_ids=[], patches=[]))
+        group["proposal_ids"].append(proposal.proposal_id)
+        group["hypothesis_ids"].append(proposal.hypothesis_id)
+        group["patches"].append(proposal.patch.changes.model_dump(exclude_unset=True))
         compiled.trial_id = f"trial-{index}"
         candidates.append(compiled)
         seen_ids.add(proposal.proposal_id)
-        seen_hashes.add(compiled.config_hash)
+    duplicates = [group for group in config_groups.values() if len(group["proposal_ids"]) > 1]
+    if duplicates:
+        raise ProposalError("DUPLICATE_CONFIG", "Proposals produce the same configuration",
+            duplicate_groups=duplicates,
+            repair_instruction="Rebuild each colliding trial from its own hypothesis mechanism; use a minimal relevant patch, not arbitrary values just to make hashes different.")
     return CompiledPlan(
         candidates=candidates, verification_epochs=response.verification_epochs
     )

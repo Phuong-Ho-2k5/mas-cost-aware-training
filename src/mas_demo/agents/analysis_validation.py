@@ -1,6 +1,9 @@
 """Check references and explicit claims, without claiming causal verification."""
 from collections import defaultdict
+import re
+import unicodedata
 from mas_demo.observation.facts import fact_has_measurement
+from mas_demo.agents.config_grounding import explicit_config_references
 
 
 def validate_epoch_detection(response, evidence):
@@ -15,7 +18,38 @@ def validate_epoch_detection(response, evidence):
 
 
 def _normalized(text):
-    return " ".join(text.split()).casefold()
+    text = unicodedata.normalize("NFKC", text).casefold().replace("_", " ")
+    return " ".join(re.sub(r"[^\w]+", " ", text).split())
+
+
+def select_distinct_hypotheses(response):
+    """Keep the highest-priority copy; preserve raw output in the caller's audit.
+
+    Matching normalized cause/mechanism text catches repetition, not arbitrary
+    semantic paraphrases. Never turn an invalid retained claim into a valid one.
+    """
+    kept, dropped = [], []
+    for hypothesis in sorted(response.hypotheses, key=lambda h: h.rank):
+        duplicate = next((old for old in kept if any(
+            _normalized(getattr(hypothesis, field))
+            and _normalized(getattr(hypothesis, field)) == _normalized(getattr(old, field))
+            for field in ("cause", "mechanism"))), None)
+        if duplicate is not None:
+            dropped.append(dict(hypothesis_id=hypothesis.hypothesis_id,
+                                duplicate_of=duplicate.hypothesis_id, rank=hypothesis.rank))
+        else:
+            kept.append(hypothesis)
+    rank_changes = []
+    # Equal ranks on genuinely different retained causes are still an error.
+    if len({h.rank for h in kept}) == len(kept):
+        for rank, hypothesis in enumerate(kept, 1):
+            if hypothesis.rank != rank:
+                rank_changes.append(dict(hypothesis_id=hypothesis.hypothesis_id,
+                                         before=hypothesis.rank, after=rank))
+        kept = [h.model_copy(update={"rank": rank}) for rank, h in enumerate(kept, 1)]
+    return response.model_copy(update={"hypotheses": kept}), dict(
+        input_count=len(response.hypotheses), kept_count=len(kept),
+        dropped=dropped, rank_changes=rank_changes)
 
 
 def validate_detection(response, facts):
@@ -37,13 +71,13 @@ def validate_detection(response, facts):
 def validate_hypotheses(response, evidence, facts, config_facts):
     errors = []
     hypotheses = response.hypotheses
-    if len(hypotheses) != 3:
-        errors.append(dict(code="invalid_hypothesis_count", reason="Trả đúng ba hypothesis"))
+    if not 1 <= len(hypotheses) <= 3:
+        errors.append(dict(code="invalid_hypothesis_count", reason="Trả từ một đến ba hypothesis khác nhau"))
     ids = [h.hypothesis_id for h in hypotheses]
     if len(ids) != len(set(ids)):
         errors.append(dict(code="duplicate_hypothesis", reason="Dùng hypothesis_id khác nhau", hypothesis_ids=ids))
-    if {h.rank for h in hypotheses} != {1, 2, 3}:
-        errors.append(dict(code="invalid_hypothesis_ranking", reason="Dùng mỗi rank 1, 2, 3 đúng một lần", hypothesis_ids=ids))
+    if {h.rank for h in hypotheses} != set(range(1, len(hypotheses) + 1)):
+        errors.append(dict(code="invalid_hypothesis_ranking", reason="Với N hypothesis, dùng mỗi rank 1 đến N đúng một lần", hypothesis_ids=ids))
     for field in ("cause", "mechanism"):
         groups = defaultdict(list)
         for h in hypotheses:
@@ -70,6 +104,19 @@ def validate_hypotheses(response, evidence, facts, config_facts):
                 error("unknown_observation", "Chỉ dùng fact_id được cung cấp", fact_ids=[fact_id])
             elif not set(fact.epochs) <= set(h.evidence_epochs):
                 error("incomplete_evidence_epochs", "Viện dẫn đủ epoch hỗ trợ fact này", fact_ids=[fact_id], required_epochs=fact.epochs)
+        mentioned, absent, active = explicit_config_references(h.cause + ". " + h.mechanism)
+        declared = {claim.field for claim in h.config_claims}
+        missing = mentioned - declared
+        if missing:
+            error("undeclared_config_claim", "Khai báo config_claims cho mọi field cấu hình được nêu trong cause/mechanism, hoặc bỏ khẳng định đó",
+                  fields=sorted(missing), actual_config=[config[f].model_dump() for f in sorted(missing) if f in config])
+        contradicted = sorted({f for f in absent if f in config and config[f].active}
+                              | {f for f in active if f in config and not config[f].active})
+        if contradicted:
+            error("contradictory_config_prose", "Cause/mechanism nói sai trạng thái bật/tắt thực tế của thành phần; sửa nội dung, không chỉ đổi claim",
+                  fields=contradicted, actual_config=[config[f].model_dump() for f in contradicted])
+        if len(declared) != len(h.config_claims):
+            error("duplicate_config_claim", "Mỗi field chỉ khai báo một config_claim")
         for claim in h.config_claims:
             fact = config.get(claim.field)
             if fact is None:

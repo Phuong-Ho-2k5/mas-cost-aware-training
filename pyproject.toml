@@ -20,6 +20,9 @@ mas-demo = "mas_demo.cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
 [tool.setuptools.package-data]
 "mas_demo.prompts" = ["*.txt"]
 "mas_demo.training" = ["assets/*.npz", "assets/*.json"]
