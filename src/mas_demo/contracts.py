@@ -178,12 +178,21 @@ class EvidenceWindow(Record):
     quality_flags: list[str] = Field(default_factory=list)
 
 
+class ConfigClaim(Record):
+    field: str
+    observed_value: StrictStr | StrictInt | StrictFloat | None
+    claim: Literal["active_effect", "missing_effect", "setting"]
+
+
 class AnalysisHypothesis(Record):
     hypothesis_id: str
     rank: int = Field(ge=1, le=3, strict=True)
     cause: str
     evidence_epochs: list[int]
     confidence: float = Field(ge=0, le=1)
+    # Defaults keep saved diagnoses readable; generated subclasses require both.
+    mechanism: str = ""
+    config_claims: list[ConfigClaim] = Field(default_factory=list)
 
 
 Hypothesis = AnalysisHypothesis
@@ -227,12 +236,6 @@ class ConfigFact(Record):
     active: bool
 
 
-class ConfigClaim(Record):
-    field: str
-    observed_value: StrictStr | StrictInt | StrictFloat | None
-    claim: Literal["active_effect", "missing_effect", "setting"]
-
-
 class GeneratedHypothesis(AnalysisHypothesis):
     hypothesis_id: str = Field(min_length=1, max_length=48)
     cause: str = Field(min_length=1, max_length=160)
@@ -242,7 +245,7 @@ class GeneratedHypothesis(AnalysisHypothesis):
 
 
 class HypothesesResponse(Record):
-    hypotheses: list[GeneratedHypothesis] = Field(min_length=3, max_length=3)
+    hypotheses: list[GeneratedHypothesis] = Field(min_length=1, max_length=3)
     reason: str = Field(min_length=1, max_length=160)
 
 
@@ -260,14 +263,14 @@ class EpochLogHypothesis(AnalysisHypothesis):
 
 
 class EpochLogHypothesesResponse(Record):
-    hypotheses: list[EpochLogHypothesis] = Field(min_length=3, max_length=3)
+    hypotheses: list[EpochLogHypothesis] = Field(min_length=1, max_length=3)
     reason: str = Field(min_length=1, max_length=160)
 
 
 class DiagnosisReport(Record):
     status: Literal["DIAGNOSED", "ABSTAIN"]
     mode: Literal["vllm"]
-    hypotheses: list[AnalysisHypothesis] = Field(default_factory=list)
+    hypotheses: list[AnalysisHypothesis] = Field(default_factory=list, max_length=3)
     reason: str = ""
 
 

@@ -5,10 +5,10 @@ from mas_demo.llm.settings import create_gateway
 from mas_demo.observation.facts import build_config_facts, build_epoch_log_payload
 from mas_demo.prompts import load_prompt
 from mas_demo.training.model import task_description
-from mas_demo.agents.analysis_validation import validate_epoch_detection, validate_hypotheses
+from mas_demo.agents.analysis_validation import validate_epoch_detection, validate_hypotheses, select_distinct_hypotheses
 
 
-def _stage(spec, gateway, stage, payload, response_type, validator, calls):
+def _stage(spec, gateway, stage, payload, response_type, validator, calls, prepare=None):
     role = f"analysis_{stage}"
     for attempt in range(2):
         metadata = {}
@@ -16,6 +16,9 @@ def _stage(spec, gateway, stage, payload, response_type, validator, calls):
             response, metadata = gateway.structured(role, payload, response_type, load_prompt(role))
             metadata = dict(metadata)
             metadata["output"] = response.model_dump()
+            if prepare is not None:
+                response, metadata["selection"] = prepare(response)
+                metadata["selected_output"] = response.model_dump()
             errors = validator(response)
             if errors:
                 metadata.update(validation_errors=errors, validation_error=errors[0])
@@ -93,9 +96,11 @@ def diagnose(spec, evidence, history, gateway=None, current_config=None):
     payload = dict(**payload,
         history=sorted(history, key=lambda row: row.get("round_id", 0))[-4:],
         current_config=current_config.model_dump(),
+        config_facts=[fact.model_dump() for fact in config_facts],
         task=task_description(spec), detection=detection.model_dump())
     hypotheses, stages["hypotheses"] = _stage(spec, gateway, "hypotheses", payload,
-        EpochLogHypothesesResponse, lambda response: validate_hypotheses(response, evidence, facts, config_facts), calls)
+        EpochLogHypothesesResponse, lambda response: validate_hypotheses(response, evidence, facts, config_facts), calls,
+        prepare=select_distinct_hypotheses)
     if hypotheses is None:
         return None, _audit(spec, calls, stages, "hypothesis_generation_failed", detection, facts, config_facts)
     report = DiagnosisReport(status="DIAGNOSED", mode=spec.analysis_mode,

@@ -123,7 +123,7 @@ def grounded_schema(role, schema, payload):
         if epochs:
             definitions["AnalysisHypothesis"]["properties"]["evidence_epochs"] = {
                 "type": "array", "items": _enum(epochs, "integer"), "minItems": 1, "maxItems": 8}
-            hypotheses = {**properties["hypotheses"], "minItems": 3}
+            hypotheses = {**properties["hypotheses"], "minItems": 1, "maxItems": 3}
             branches.append(_object({"status": _enum(["DIAGNOSED"]), "hypotheses": hypotheses, "reason": reason}))
     elif role == "planner":
         definitions["ConfigPatch"]["properties"]["reason"]["maxLength"] = 120
@@ -138,7 +138,7 @@ def grounded_schema(role, schema, payload):
         remaining = payload.get("remaining_epochs", 0)
         current = payload.get("current_config", {})
         base = payload.get("base_config_hash")
-        if (epochs and identifiers and required_count == 3 and len(set(identifiers)) == required_count
+        if (epochs and identifiers and 1 <= required_count <= 3 and len(set(identifiers)) == required_count
             and (payload.get("diagnosis") or {}).get("status", "DIAGNOSED") == "DIAGNOSED"
             and type(remaining) is int and remaining > 0 and base and current):
             definitions["ConfigProposal"]["properties"]["hypothesis_id"] = _enum(identifiers)

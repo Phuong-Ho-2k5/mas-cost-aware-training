@@ -46,9 +46,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/stop_vllm.ps1
    gradient và quan sát theo epoch. Config/data chỉ hỗ trợ giải thích nguyên
    nhân có thể xảy ra, không tự quyết định status. `DIAGNOSED` là giả thuyết có
    evidence cần kiểm chứng; `ABSTAIN` là logs bình thường hoặc chưa đủ căn cứ.
-3. Analysis trả ba hypothesis có rank duy nhất 1–3 khi `DIAGNOSED`; rank 1 được
+3. Analysis trả từ một đến tối đa ba hypothesis khác nhau khi `DIAGNOSED`, có rank
+   duy nhất 1–N; không ép đủ ba. Bản trùng cause/mechanism sau chuẩn hóa được bỏ,
+   giữ bản ưu tiên cao hơn và ghi audit; rank 1 được
    ưu tiên kiểm chứng trước. Planner nhận diagnosis và đề xuất đúng một trial
-   cho mỗi hypothesis, tổng cộng ba cấu hình khác nhau. Planner không duyệt ngân sách.
+   cho mỗi hypothesis: N hypothesis tạo đúng N cấu hình khác nhau. Planner không duyệt ngân sách.
 4. Mỗi proposal là patch tối thiểu: `changes` chỉ chứa giá trị thực sự khác
    `current_config`. Planner chọn một `verification_epochs` chung cho control
    và mọi trial, không vượt số epoch còn lại.
