@@ -75,10 +75,10 @@ def grounded_schema(role, schema, payload):
     if role == "analysis_detection" and payload.get("input_format") == "epoch_logs":
         epochs = _epochs(payload)
         refs = {"type": "array", "items": _enum(epochs, "integer") if epochs else {"type": "integer"}, "maxItems": min(8, len(epochs))}
-        branches = [_object({"status": _enum(["ABSTAIN"]), "evidence_epochs": refs, "reason": reason})]
+        branches = [_object({"evidence_epochs": refs, "reason": reason, "status": _enum(["ABSTAIN"])})]
         measured = {e.get("epoch") for e in payload.get("evidence", {}).get("recent_events", [])}
         if measured & set(epochs):
-            branches.append(_object({"status": _enum(["DIAGNOSED"]), "evidence_epochs": {**refs, "minItems": 1, "items": _enum(sorted(measured & set(epochs)), "integer")}, "reason": reason}))
+            branches.append(_object({"evidence_epochs": {**refs, "minItems": 1, "items": _enum(sorted(measured & set(epochs)), "integer")}, "reason": reason, "status": _enum(["DIAGNOSED"])}))
     elif role == "analysis_detection":
         from mas_demo.observation.facts import fact_has_measurement
         ids = [f["fact_id"] for f in payload.get("facts", [])]

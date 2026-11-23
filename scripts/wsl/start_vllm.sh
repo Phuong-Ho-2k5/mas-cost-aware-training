@@ -12,11 +12,16 @@ batch_tokens=${2:-1024}
 memory_fraction=${3:-0.65}
 compact_json=${4:-false}
 context_tokens=${5:-4096}
+reasoning_parser=${6:-none}
 [[ "$context_tokens" == 4096 || "$context_tokens" == 8192 ]] || exit 2
 [[ "$compact_json" == true || "$compact_json" == false ]] || exit 2
+[[ "$reasoning_parser" == none || "$reasoning_parser" == qwen3 ]] || exit 2
 decoder_args=()
 if [[ "$compact_json" == true ]]; then
     decoder_args=(--structured-outputs-config '{"backend":"xgrammar","disable_any_whitespace":true}')
+fi
+if [[ "$reasoning_parser" != none ]]; then
+    decoder_args+=(--reasoning-parser "$reasoning_parser")
 fi
 [[ "$port" == 8001 || "$port" == 8000 ]] || { echo 'Use candidate8001 or final8000.' >&2; exit 2; }
 [[ "$batch_tokens" == 1024 || "$batch_tokens" == 512 ]] || exit 2

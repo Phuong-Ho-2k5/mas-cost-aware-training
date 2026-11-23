@@ -21,11 +21,13 @@ def create_gateway(spec):
         timeout = float(os.environ.get("LLM_TIMEOUT_SECONDS", "120"))
         deadline = float(os.environ.get("LLM_DEADLINE_SECONDS", "130"))
         max_tokens = int(os.environ.get("LLM_MAX_OUTPUT_TOKENS", "1024"))
-        if not all(math.isfinite(x) and x > 0 for x in (timeout, deadline)) or not 1 <= max_tokens <= 2048:
+        enable_thinking = os.environ.get("LLM_ENABLE_THINKING", "false").strip().lower() in ("1", "true", "yes", "on")
+        if not all(math.isfinite(x) and x > 0 for x in (timeout, deadline)) or not 1 <= max_tokens <= 4096:
             raise ValueError()
     except ValueError:
-        raise ValueError("LLM timeout/deadline must be positive finite seconds; output tokens must be 1..2048") from None
+        raise ValueError("LLM timeout/deadline must be positive finite seconds; output tokens must be 1..4096") from None
     return VLLMGateway(os.environ.get("LLM_API_KEY", "").strip(), spec.model_id,
         base_url=url, timeout=timeout, deadline=deadline, attempts=1, max_tokens=max_tokens,
-        local_backend=backend, runtime_manifest=os.environ.get("LLM_RUNTIME_MANIFEST") or (
+        local_backend=backend, enable_thinking=enable_thinking,
+        runtime_manifest=os.environ.get("LLM_RUNTIME_MANIFEST") or (
             str(Path(__file__).resolve().parents[3] / "tmp/vllm/runtime-manifest.json")))

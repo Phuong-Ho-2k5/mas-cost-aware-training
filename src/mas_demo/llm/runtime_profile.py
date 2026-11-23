@@ -31,6 +31,9 @@ def validate_serving_profile(profile):
         raise ValueError("Unqualified structured output configuration")
     if profile["max_model_len"] == 8192 and decoder != COMPACT_DECODER:
         raise ValueError("8192 profile requires compact structured output configuration")
+    reasoning_parser = profile.get("reasoning_parser")
+    if reasoning_parser is not None and reasoning_parser != "qwen3":
+        raise ValueError("Unqualified reasoning parser")
     return deepcopy(profile)
 
 
@@ -60,6 +63,8 @@ def expected_serving_argv(profile):
             argv.append(str(value))
     if profile.get("structured_outputs_config") is not None:
         argv.extend(["--structured-outputs-config", json.dumps(profile["structured_outputs_config"], separators=(",", ":"))])
+    if profile.get("reasoning_parser") is not None:
+        argv.extend(["--reasoning-parser", profile["reasoning_parser"]])
     return argv
 
 

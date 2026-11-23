@@ -4,8 +4,7 @@ Các file được đọc mới mỗi request qua `load_prompt()`. Sửa text c�
 lượt gọi Agent tiếp theo, kể cả run đang hoạt động; không cần restart server.
 Schema/validator và khả năng thực thi vẫn nằm trong Python.
 
-Định dạng các file prompt `.txt`: mỗi đoạn nằm trên một dòng vật lý, không xuống
-dòng cứng giữa đoạn; dùng dòng trống để ngăn các đoạn.
+Định dạng các file prompt chính (`analysis_detection.txt`, `analysis_hypotheses.txt`, `planner.txt`, `evaluation.txt`): cấu trúc thống nhất gồm 5 phần — đoạn mở đầu vai trò, `# Input`, `# Output`, `# Trường hỗ trợ`, và `# Quy tắc` (không dùng `# Ví dụ` để tránh model nhỏ chép mẫu cứng).
 
 ## Vai trò
 
@@ -14,12 +13,12 @@ dòng cứng giữa đoạn; dùng dòng trống để ngăn các đoạn.
 | `analysis.txt` | Prompt một bước cho adapter legacy `gateway.complete`; không dùng trong pipeline hai bước. |
 | `analysis_detection.txt` | Đọc nguyên bản ghi epoch và viện dẫn bằng epoch; không nhận current_config riêng. |
 | `analysis_hypotheses.txt` | Nhận detection đã khóa và config thực tế; sinh từ một đến ba cơ chế nguyên nhân nghi ngờ khác nhau. |
-| `local_vllm_analysis.txt` | Wrapper JSON riêng cho hai bước Analysis, không chứa chỉ dẫn Planner/Evaluation. |
+| `local_vllm_analysis.txt` | Hậu tố ngắn nhắc định dạng JSON gọn và tiếng Việt cho hai bước Analysis (đã gộp gọn, không lặp quy tắc chính). |
 | `planner.txt` | Nhận diagnosis có rank, tạo đúng một trial cho mỗi hypothesis, sinh sparse patch và chọn horizon; controller quyết định ngân sách. |
 | `evaluation.txt` | So control/trial sau khi chạy tại comparison epoch, chọn kết quả phù hợp. |
-| `local.txt` | Hướng dẫn ngắn dùng chung cho Analysis/Evaluation vLLM. |
-| `local_vllm.txt` | JSON gọn và chỉ dẫn bổ sung cho Analysis/Evaluation vLLM. |
-| `local_vllm_planner.txt` | JSON gọn riêng Planner, mẫu proposal/abstain và giới hạn văn bản. |
+| `local.txt` | Hậu tố ngắn chống bịa số liệu cho Evaluation / adapter legacy. |
+| `local_vllm.txt` | Hậu tố ngắn nhắc định dạng JSON gọn cho Evaluation / adapter legacy. |
+| `local_vllm_planner.txt` | Hậu tố ngắn nhắc định dạng JSON gọn và tiếng Việt cho Planner (đã gộp gọn, không lặp quy tắc chính). |
 
 Analysis trả từ một đến ba hypothesis về các nguyên nhân nghi ngờ khác nhau khi DIAGNOSED;
 ABSTAIN trả danh sách rỗng. Mỗi hypothesis có ID riêng, rank 1–N duy nhất và

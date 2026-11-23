@@ -114,6 +114,8 @@ def _validated_argv(argv, profile):
             expected.append(str(value))
     if profile.get("structured_outputs_config") is not None:
         expected.extend(["--structured-outputs-config", json.dumps(profile["structured_outputs_config"], separators=(",", ":"))])
+    if profile.get("reasoning_parser") is not None:
+        expected.extend(["--reasoning-parser", profile["reasoning_parser"]])
     if argv != expected:
         raise ValueError("Effective vLLM argv differs from the pinned runtime profile")
 
@@ -186,6 +188,7 @@ def verify_vllm_runtime(gateway):
                 "context_tokens": profile["max_model_len"], "chat_template_kwargs": profile["chat_template_kwargs"],
                 "versions": versions, "torch_cuda": manifest["torch_cuda"],
                 "structured_outputs_config": profile.get("structured_outputs_config"),
+                "reasoning_parser": profile.get("reasoning_parser"),
                 "process": {k: observed[k] for k in ("pid", "process_group", "create_time", "start_ticks", "boot_id") if k in observed},
                 "effective_argv": observed["effective_argv"]}
     except (OSError, ValueError, KeyError, TypeError, AttributeError):

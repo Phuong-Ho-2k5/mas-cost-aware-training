@@ -193,12 +193,14 @@ def finalize_probe(report, resources, process, output, started):
         save(output / "probe.json", report)
 
 
-def verify_launch_identity(process, batch_tokens, memory_fraction, context_tokens=4096):
+def verify_launch_identity(process, batch_tokens, memory_fraction, context_tokens=4096, reasoning_parser=None):
     import psutil
     argv = psutil.Process(process.pid).cmdline()
     if batch_tokens == 1024 and float(memory_fraction) == 0.65:
         declared = {**PINNED, "port": 8001, "max_model_len": context_tokens,
                     "structured_outputs_config": COMPACT_DECODER}
+        if reasoning_parser:
+            declared["reasoning_parser"] = reasoning_parser
         if argv != expected_serving_argv(declared):
             raise ValueError("Effective launch command differs from the complete declared profile")
     expected = {"--revision": REVISION, "--tokenizer-revision": REVISION, "--served-model-name": MODEL,
@@ -441,6 +443,7 @@ def main():
     parser.add_argument("--batch-tokens", choices=(512, 1024), type=int, default=1024)
     parser.add_argument("--gpu-memory-utilization", choices=("0.65", "0.80", "0.85"), default="0.65")
     parser.add_argument("--context-tokens", choices=(4096, 8192), type=int, default=4096)
+    parser.add_argument("--reasoning-parser", choices=("none", "qwen3"), default="none")
     parser.add_argument("--publish-qualification", action="store_true")
     args = parser.parse_args()
     if args.publish_qualification and not args.launch:
@@ -465,10 +468,13 @@ def main():
     resources = Resources(output / "resources.jsonl", enforce_storage=args.launch)
     probe = Probe(args.url, args.model, output, context_tokens=args.context_tokens)
     root = Path(__file__).resolve().parents[1]
+    reasoning_parser = None if args.reasoning_parser == "none" else args.reasoning_parser
     report["profile"] = {**PINNED, "port": 8001, "max_model_len": args.context_tokens,
                          "max_num_batched_tokens": args.batch_tokens,
                          "gpu_memory_utilization": float(args.gpu_memory_utilization),
                          "structured_outputs_config": COMPACT_DECODER}
+    if reasoning_parser:
+        report["profile"]["reasoning_parser"] = reasoning_parser
     report["profile_fingerprint"] = profile_fingerprint(report["profile"]) if args.publish_qualification else None
     report["requirements_lock"] = {"sha256": hashlib.sha256((root / "requirements-vllm.lock").read_bytes()).hexdigest()}
     started = time.monotonic()
@@ -488,7 +494,7 @@ def main():
             report["snapshot"] = prepare_snapshot(output)
             launcher = Path(__file__).resolve().parent / "wsl/start_vllm.sh"
             command = ["/bin/bash", str(launcher), "8001", str(args.batch_tokens), args.gpu_memory_utilization,
-                       "true", str(args.context_tokens)]
+                       "true", str(args.context_tokens), args.reasoning_parser]
             report["launch_command"] = command
             with (output / "server.log").open("w", encoding="utf-8") as log:
                 process = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
@@ -514,7 +520,7 @@ def main():
         report["startup_seconds"] = time.monotonic() - started
         if process:
             report["launch_identity"] = verify_launch_identity(process, args.batch_tokens, args.gpu_memory_utilization,
-                                                               args.context_tokens)
+                                                               args.context_tokens, reasoning_parser=reasoning_parser)
             from importlib import metadata
             import torch
             report["versions"] = {name: metadata.version(name) for name in ("vllm", "torch", "transformers", "triton")}

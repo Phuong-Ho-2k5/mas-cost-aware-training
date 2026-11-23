@@ -61,6 +61,27 @@ def response_schema(role, response_type, mode="vllm", max_trials=None, payload=N
     return schema
 
 
+def _with_thought_field(schema, max_length=360):
+    """Prepend a bounded `thought` field to the wire schema for structured CoT."""
+    from copy import deepcopy
+    wired = deepcopy(schema)
+    thought_prop = {"type": "string", "minLength": 1, "maxLength": max_length}
+
+    def inject(node):
+        if isinstance(node, dict) and node.get("type") == "object" and "properties" in node:
+            node["properties"] = {"thought": thought_prop, **node["properties"]}
+            req = list(node.get("required", []))
+            if "thought" not in req:
+                node["required"] = ["thought", *req]
+
+    if "anyOf" in wired:
+        for branch in wired["anyOf"]:
+            inject(branch)
+    else:
+        inject(wired)
+    return wired
+
+
 class VLLMGateway:
     def __init__(
         self,
@@ -74,6 +95,7 @@ class VLLMGateway:
         attempts=1,
         max_tokens=1024,
         local_backend="vllm",
+        enable_thinking=False,
         runtime_manifest=None,
     ):
         if mode != "vllm" or local_backend != "vllm":
@@ -83,6 +105,7 @@ class VLLMGateway:
         self.timeout, self.retry_delay, self.deadline = timeout, retry_delay, deadline
         self.mode, self.attempts, self.max_tokens = mode, attempts, max_tokens
         self.local_backend = "vllm"
+        self.enable_thinking = bool(enable_thinking)
         self.runtime_manifest = runtime_manifest or str(
             Path(__file__).resolve().parents[3] / "tmp/vllm/runtime-manifest.json"
         )
@@ -148,16 +171,29 @@ class VLLMGateway:
             "evaluation": "training_evaluation",
         }[role]
         if role in ("analysis_detection", "analysis_hypotheses"):
-            instruction += "\n" + load_prompt("local_vllm_analysis")
+            instruction = instruction.rstrip() + "\n\n" + load_prompt("local_vllm_analysis").strip()
+        elif role == "planner":
+            instruction = instruction.rstrip() + "\n\n" + load_prompt("local_vllm_planner").strip()
         else:
-            if role != "planner":
-                instruction += load_prompt("local")
-            instruction += load_prompt("local_vllm_planner" if role == "planner" else "local_vllm")
+            instruction = (
+                instruction.rstrip()
+                + "\n\n"
+                + load_prompt("local").strip()
+                + " "
+                + load_prompt("local_vllm").strip()
+            )
         system = instruction
         metadata["response_schema"] = schema
+        thinking = self.enable_thinking and bool(metadata["server"].get("reasoning_parser"))
+        structured_thought = (
+            not thinking
+            and role in ("analysis_detection", "analysis_hypotheses", "planner", "evaluation")
+        )
+        wire_schema = _with_thought_field(schema) if structured_thought else schema
+        metadata["response_schema"] = wire_schema
         body = {
             "model": self.model,
-            "temperature": 0,
+            "temperature": 0.6 if thinking else 0,
             "max_tokens": self.max_tokens,
             "messages": [
                 {
@@ -168,10 +204,13 @@ class VLLMGateway:
             ],
             "response_format": {
                 "type": "json_schema",
-                "json_schema": {"name": schema_name, "strict": False, "schema": schema},
+                "json_schema": {"name": schema_name, "strict": False, "schema": wire_schema},
             },
         }
-        body["chat_template_kwargs"] = {"enable_thinking": False}
+        if thinking:
+            body["top_p"] = 0.95
+            body["presence_penalty"] = 0.2
+        body["chat_template_kwargs"] = {"enable_thinking": thinking}
         started = time.monotonic()
         async with httpx.AsyncClient(trust_env=False) as client:
             from mas_demo.llm.context import fit_local_context
@@ -211,10 +250,18 @@ class VLLMGateway:
                                 usage=data.get("usage", {}),
                             )
                             choice = data["choices"][0]
-                            content = choice["message"]["content"]
+                            message = choice["message"]
+                            content = message["content"]
+                            reasoning = message.get("reasoning") or message.get("reasoning_content")
+                            if reasoning:
+                                metadata["reasoning"] = (
+                                    reasoning.replace(self.key, "[REDACTED]")
+                                    if self.key
+                                    else reasoning
+                                )
                             metadata["raw_output"] = (
                                 content.replace(self.key, "[REDACTED]")
-                                if self.key
+                                if self.key and content
                                 else content
                             )
                             metadata["finish_reason"] = choice.get("finish_reason")
@@ -222,8 +269,16 @@ class VLLMGateway:
                                 raise GatewayError("Upstream model identity mismatch")
                             if choice.get("finish_reason") != "stop":
                                 raise ValueError("Incomplete or refused model output")
-                            Draft202012Validator(schema).validate(json.loads(content))
-                            result = response_type.model_validate_json(content)
+                            parsed = json.loads(content)
+                            if structured_thought and isinstance(parsed, dict) and "thought" in parsed:
+                                thought = parsed.pop("thought")
+                                metadata["thought"] = (
+                                    thought.replace(self.key, "[REDACTED]")
+                                    if self.key and isinstance(thought, str)
+                                    else thought
+                                )
+                            Draft202012Validator(schema).validate(parsed)
+                            result = response_type.model_validate(parsed)
                         except (
                             ValueError,
                             KeyError,

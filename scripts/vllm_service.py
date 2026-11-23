@@ -123,7 +123,8 @@ def linux_action(action, payload):
         assert_port_clear(profile["port"])
         directory.mkdir(parents=True, exist_ok=False)
         command = ["/bin/bash", str(ROOT / "scripts/wsl/start_vllm.sh"), str(profile["port"]), "1024", "0.65",
-                   "true" if profile.get("structured_outputs_config") else "false", str(profile["max_model_len"])]
+                   "true" if profile.get("structured_outputs_config") else "false", str(profile["max_model_len"]),
+                   profile.get("reasoning_parser") or "none"]
         with (directory / "server.log").open("ab", buffering=0) as log:
             child = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=log,
                                      stderr=subprocess.STDOUT, start_new_session=True)
