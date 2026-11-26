@@ -7,6 +7,13 @@ def make_optimizer(model, config):
     common = dict(lr=config.learning_rate, weight_decay=config.weight_decay)
     if config.optimizer == "sgd":
         return torch.optim.SGD(model.parameters(), momentum=config.momentum, **common)
+    if config.optimizer == "rmsprop":
+        return torch.optim.RMSprop(
+            model.parameters(),
+            momentum=config.momentum,
+            eps=config.epsilon,
+            **common,
+        )
     cls = torch.optim.Adam if config.optimizer == "adam" else torch.optim.AdamW
     return cls(
         model.parameters(),
@@ -25,6 +32,13 @@ def make_scheduler(optimizer, config):
             step_size=config.scheduler_step_size,
             gamma=config.scheduler_gamma,
         )
+    if config.scheduler == "plateau":
+        return torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer,
+            mode="min",
+            factor=config.scheduler_gamma,
+            patience=config.scheduler_patience,
+        )
     return torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer, T_max=config.scheduler_t_max
     )
@@ -36,6 +50,7 @@ def scheduler_identity(config):
         config.scheduler_step_size,
         config.scheduler_gamma,
         config.scheduler_t_max,
+        config.scheduler_patience,
     )
 
 
@@ -44,5 +59,7 @@ def apply_optimizer_settings(optimizer, config):
         group.update(lr=config.learning_rate, weight_decay=config.weight_decay)
         if config.optimizer == "sgd":
             group["momentum"] = config.momentum
+        elif config.optimizer == "rmsprop":
+            group.update(momentum=config.momentum, eps=config.epsilon)
         else:
             group.update(betas=(config.beta1, config.beta2), eps=config.epsilon)

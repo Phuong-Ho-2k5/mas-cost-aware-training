@@ -62,7 +62,6 @@ def train_segment(
     manifest = get_manifest(spec)
     train, validation_data = load_datasets(spec, manifest)
     generator = torch.Generator().manual_seed(spec.seed)
-    model = create_model(spec).to(device)
     previous = None
     if start:
         validate_checkpoint(start, manifest.version)
@@ -80,7 +79,6 @@ def train_segment(
             raise ValueError("Checkpoint configuration hash mismatch")
         if previous.get("model_signature", "SmallCNN") != model_signature(spec):
             raise ValueError("Checkpoint model identity mismatch")
-        model.load_state_dict(previous["model"])
     old_config = (
         TrainingConfig.model_validate(previous["training_config"])
         if previous
@@ -89,8 +87,27 @@ def train_segment(
     config = TrainingConfig.model_validate(training_config or old_config).model_copy(
         deep=True
     )
+    model = create_model(spec, config).to(device)
+    arch_changed = bool(
+        previous
+        and (
+            old_config.hidden_activation != config.hidden_activation
+            or old_config.use_batchnorm != config.use_batchnorm
+            or old_config.weight_init != config.weight_init
+        )
+    )
+    reinit_triggered = bool(
+        previous and config.weight_init != "keep" and old_config.weight_init != config.weight_init
+    )
+    if previous and not reinit_triggered:
+        if hasattr(model, "load_compatible_state"):
+            model.load_compatible_state(previous["model"])
+        else:
+            model.load_state_dict(previous["model"])
     optimizer = make_optimizer(model, config)
-    optimizer_reset = bool(previous and old_config.optimizer != config.optimizer)
+    optimizer_reset = bool(
+        previous and (old_config.optimizer != config.optimizer or arch_changed)
+    )
     scheduler_reset = bool(
         previous
         and (
@@ -120,6 +137,7 @@ def train_segment(
     result.transition = {
         "optimizer_reset": optimizer_reset,
         "scheduler_reset": scheduler_reset,
+        "architecture_changed": arch_changed,
     }
     epoch = 0
     samples_seen = optimizer_steps = bad_epochs = 0
@@ -151,7 +169,22 @@ def train_segment(
     validation = DataLoader(
         validation_data, batch_size=config.batch_size, shuffle=False, num_workers=0
     )
-    loss_fn = torch.nn.CrossEntropyLoss()
+    ce_loss = torch.nn.CrossEntropyLoss(label_smoothing=config.label_smoothing)
+    bce_loss = torch.nn.BCEWithLogitsLoss()
+
+    def compute_loss_and_correct(logits, targets):
+        if logits.ndim == 2 and logits.shape[1] == 1:
+            y_float = targets.float().unsqueeze(1)
+            if config.label_smoothing > 0:
+                eps = config.label_smoothing
+                y_smooth = y_float * (1.0 - eps) + 0.5 * eps
+            else:
+                y_smooth = y_float
+            loss_val = bce_loss(logits, y_smooth)
+            preds = (logits.squeeze(1) >= 0.0).long()
+            return loss_val, int((preds == targets).sum())
+        loss_val = ce_loss(logits, targets)
+        return loss_val, int((logits.argmax(1) == targets).sum())
     target_epoch = min(epoch + epochs, spec.max_epochs)
     best_quality = (-1, -float("inf"))
     guard = spec.unit_guard_seconds
@@ -173,7 +206,7 @@ def train_segment(
                 break
             batch_started = time.monotonic()
             x, y = x.to(device), y.to(device)
-            loss = loss_fn(model(x), y)
+            loss, _ = compute_loss_and_correct(model(x), y)
             if not torch.isfinite(loss):
                 numerical = True
                 break
@@ -190,6 +223,10 @@ def train_segment(
             if (
                 batch_index + 1
             ) % config.gradient_accumulation == 0 or batch_index + 1 == len(loader):
+                if config.grad_clip_value is not None:
+                    torch.nn.utils.clip_grad_value_(
+                        model.parameters(), config.grad_clip_value
+                    )
                 norm = torch.nn.utils.clip_grad_norm_(
                     model.parameters(), config.grad_clip_norm or float("inf")
                 )
@@ -217,12 +254,12 @@ def train_segment(
                     break
                 x, y = x.to(device), y.to(device)
                 logits = model(x)
-                loss = loss_fn(logits, y)
+                loss, batch_correct = compute_loss_and_correct(logits, y)
                 if not torch.isfinite(loss):
                     numerical = True
                     break
                 val_loss += loss.item() * len(y)
-                correct += int((logits.argmax(1) == y).sum())
+                correct += batch_correct
                 seen += len(y)
         if numerical:
             result.status = "NUMERICAL_ERROR"
@@ -237,7 +274,7 @@ def train_segment(
             val_loss=val_loss / seen,
             val_accuracy=correct / seen,
             learning_rate=config.learning_rate,
-            momentum=config.momentum if config.optimizer == "sgd" else None,
+            momentum=config.momentum if config.optimizer in ("sgd", "rmsprop") else None,
             weight_decay=config.weight_decay,
             grad_clip_norm=config.grad_clip_norm,
             grad_norm=grad_total / max(step_count, 1),
@@ -256,7 +293,10 @@ def train_segment(
         else:
             bad_epochs += 1
         if scheduler is not None:
-            scheduler.step()
+            if config.scheduler == "plateau":
+                scheduler.step(event.val_loss)
+            else:
+                scheduler.step()
             config.learning_rate = optimizer.param_groups[0]["lr"]
         state = {
             "schema_version": 3,

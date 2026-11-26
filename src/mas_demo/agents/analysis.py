@@ -4,7 +4,7 @@ from mas_demo.llm.gateway import GatewayError, failure_metadata
 from mas_demo.llm.settings import create_gateway
 from mas_demo.observation.facts import build_config_facts, build_epoch_log_payload
 from mas_demo.prompts import load_prompt
-from mas_demo.training.model import task_description
+from mas_demo.training.model import model_summary, task_description
 from mas_demo.agents.analysis_validation import validate_epoch_detection, validate_hypotheses, select_distinct_hypotheses
 
 
@@ -74,6 +74,37 @@ def _audit(spec, calls, stages, outcome, detection, facts, config_facts, report=
     return metadata
 
 
+def _relevant_config_facts(config_facts, current_config, arch_summary=None):
+    """Drop inactive fields belonging to other optimizers/schedulers so small LLMs focus on real knobs."""
+    irrelevant = set()
+    if current_config.optimizer == "sgd":
+        irrelevant |= {"beta1", "beta2", "epsilon"}
+    elif current_config.optimizer == "rmsprop":
+        irrelevant |= {"beta1", "beta2"}
+    else:
+        irrelevant.add("momentum")
+    if current_config.scheduler == "none":
+        irrelevant |= {"scheduler_step_size", "scheduler_gamma", "scheduler_t_max", "scheduler_patience"}
+    elif current_config.scheduler == "step":
+        irrelevant |= {"scheduler_t_max", "scheduler_patience"}
+    elif current_config.scheduler == "cosine":
+        irrelevant |= {"scheduler_step_size", "scheduler_gamma", "scheduler_patience"}
+    elif current_config.scheduler == "plateau":
+        irrelevant |= {"scheduler_step_size", "scheduler_t_max"}
+    for name, default in (("grad_clip_value", None), ("label_smoothing", 0.0),
+                          ("early_stop_patience", None), ("gradient_accumulation", 1)):
+        if getattr(current_config, name) == default:
+            irrelevant.add(name)
+    arch_flagged = bool(
+        arch_summary and (arch_summary.get("exploding_activation") or arch_summary.get("vanishing_activation"))
+    )
+    if not arch_flagged:
+        for name, default in (("hidden_activation", "keep"), ("use_batchnorm", False), ("weight_init", "keep")):
+            if getattr(current_config, name) == default:
+                irrelevant.add(name)
+    return [fact for fact in config_facts if fact.field not in irrelevant]
+
+
 def diagnose(spec, evidence, history, gateway=None, current_config=None):
     gateway = gateway or create_gateway(spec)
     current_config = current_config or spec.training
@@ -93,14 +124,25 @@ def diagnose(spec, evidence, history, gateway=None, current_config=None):
     if detection.status == "ABSTAIN":
         report = DiagnosisReport(status="ABSTAIN", mode=spec.analysis_mode, reason=detection.reason)
         return report, _audit(spec, calls, stages, "abstained", detection, facts, config_facts, report)
-    payload = dict(**payload,
+    arch_summary = model_summary(spec, current_config)
+    prompt_facts = _relevant_config_facts(config_facts, current_config, arch_summary)
+    relevant_keys = {fact.field for fact in prompt_facts}
+    hyp_payload = dict(
+        schema_version=payload["schema_version"],
+        input_format=payload["input_format"],
+        window_summary=payload["window_summary"],
+        model_summary=arch_summary,
+        detection=detection.model_dump(),
+        current_config={k: v for k, v in current_config.model_dump().items() if k in relevant_keys},
+        config_facts=[fact.model_dump() for fact in prompt_facts],
+        evidence=payload["evidence"],
         history=sorted(history, key=lambda row: row.get("round_id", 0))[-4:],
-        current_config=current_config.model_dump(),
-        config_facts=[fact.model_dump() for fact in config_facts],
-        task=task_description(spec), detection=detection.model_dump())
-    hypotheses, stages["hypotheses"] = _stage(spec, gateway, "hypotheses", payload,
-        EpochLogHypothesesResponse, lambda response: validate_hypotheses(response, evidence, facts, config_facts), calls,
-        prepare=select_distinct_hypotheses)
+        task=task_description(spec),
+    )
+    hypotheses, stages["hypotheses"] = _stage(spec, gateway, "hypotheses", hyp_payload,
+        EpochLogHypothesesResponse,
+        lambda response: validate_hypotheses(response, evidence, facts, config_facts),
+        calls, prepare=select_distinct_hypotheses)
     if hypotheses is None:
         return None, _audit(spec, calls, stages, "hypothesis_generation_failed", detection, facts, config_facts)
     report = DiagnosisReport(status="DIAGNOSED", mode=spec.analysis_mode,

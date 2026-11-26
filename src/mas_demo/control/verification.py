@@ -10,12 +10,14 @@ from mas_demo.io import write_json
 def verify_round(
     spec, fork, admission, ledger, backend, directory, current_config=None
 ):
-    validate_checkpoint(fork)
     current_config = current_config or spec.training
-    if fork.config_hash != config_hash(current_config):
-        raise ValueError("Fork/config hash mismatch")
+    active_hash = config_hash(current_config)
+    if fork is not None:
+        validate_checkpoint(fork)
+        if fork.config_hash != active_hash:
+            raise ValueError("Fork/config hash mismatch")
     if not admission.approved or admission.control_key is None or any(
-        c.base_config_hash != fork.config_hash for c in admission.approved
+        c.base_config_hash != active_hash for c in admission.approved
     ):
         raise ValueError("Candidates are not based on the active fork config")
     directory = Path(directory)
@@ -33,12 +35,13 @@ def verify_round(
     if control.seconds > control_limit:
         control = control.model_copy(update={"status": "BUDGET_EXHAUSTED",
             "error": f"Control exceeded its {control_limit:g}s reservation; charged {control.seconds:g}s"})
+    base_epoch = fork.epoch if fork is not None else 0
     result = VerificationRoundResult(
-        comparison_epoch=fork.epoch + admission.horizon, fork_ref=fork, control=control
+        comparison_epoch=base_epoch + admission.horizon, fork_ref=fork, control=control
     )
     for candidate in admission.approved:
         key = admission.reservation_keys[candidate.trial_id]
-        if control.status != "COMPLETE" or ledger.consumed >= ledger.cap:
+        if control.status not in ("COMPLETE", "NUMERICAL_ERROR") or ledger.consumed >= ledger.cap:
             ledger.release(key)
             part = SegmentResult(
                 status="FAILED",

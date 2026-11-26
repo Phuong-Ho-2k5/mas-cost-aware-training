@@ -26,7 +26,7 @@ repair_attempt (tùy chọn):
 
 # Output
 
-{"thought":"...","proposals":[{"proposal_id":"...","hypothesis_id":"...","patch":{"base_config_hash":"<base_config_hash>","changes":{"<field>":"<gia_tri_moi>"},"reason":"...","evidence_epochs":[...]},"expected_effect":"..."}],"verification_epochs":<so_nguyen_duong|null>,"reason":"..."}
+Trả về duy nhất một JSON object gồm 4 trường: `thought`, `proposals` (danh sách object gồm `proposal_id`, `hypothesis_id`, `patch` với `base_config_hash`/`changes`/`reason`/`evidence_epochs`, và `expected_effect`), `verification_epochs`, và `reason`. Điền nội dung thực tế từ dữ liệu đầu vào cho mọi trường.
 
 # Trường hỗ trợ
 
@@ -47,7 +47,11 @@ repair_attempt (tùy chọn):
 - Với `N` hypothesis (`DIAGNOSED`), bắt buộc tạo đúng `N` proposal khác nhau về cấu hình kết quả (`changes` không gây `NO_OP` và không trùng nhau tạo `DUPLICATE_CONFIG`); không bỏ sót, không lặp `hypothesis_id`, không tự thêm trial cho đủ 3.
 - Giữ thứ hạng `rank` từ Analysis thông qua `hypothesis_id`; không xuất `rank` mới, không tự loại trial vì ngân sách (Controller sẽ ước tính thời gian và duyệt theo rank).
 - Đề xuất patch tối thiểu theo từng `mechanism`, `cause` và `config_claims`: mỗi `patch.changes` chỉ đổi đúng 1 field chính (tối đa 2 field nếu bắt buộc) để kiểm chứng cơ chế tương ứng; không thêm các field không liên quan (như `batch_size`, `gradient_accumulation`, `early_stop_patience`) khi giả thuyết không nhắc tới.
-- Chọn `verification_epochs` ngắn vừa đủ để kiểm chứng xu hướng (không đặt bằng toàn bộ `remaining_epochs` khi còn nhiều epoch).
+- Với giả thuyết lỗi kiến trúc (`hidden_activation`, `use_batchnorm`, `weight_init` — ví dụ `exploding_activation` do `exponential` hoặc `vanishing_activation` do nhiều lớp `sigmoid`/`tanh`): đề xuất `hidden_activation: "selu"` hoặc `"relu"`, hoặc `use_batchnorm: true`, hoặc `weight_init: "lecun"`/`"kaiming"`.
+- Giá trị thay đổi phải **đủ lớn để tạo khác biệt thực sự** (không nhích vi mô kiểu `momentum +0.001` hay `weight_decay=0.000001`; ví dụ `learning_rate` thay đổi ít nhất gấp 2 lần đến gấp 10 lần, `momentum` đổi ít nhất ±0.05–0.3, `weight_decay >= 0.0001`).
+- Luôn viết giá trị số trong `patch.changes` ở **dạng thập phân chuẩn** (`0.01`, `0.001`, `0.0001`), tuyệt đối KHÔNG viết ký hiệu khoa học (kiểu `1e-5`, `1e-4`). Khi tăng `learning_rate` từ mức rất nhỏ, ưu tiên vùng chuẩn (`0.001`–`0.1`).
+- Tuyệt đối KHÔNG đề xuất lại cấu hình đã có trong `history` với `status="REJECT"` (sẽ bị chặn `ALREADY_TRIED`); nếu một mức `learning_rate` nhỏ (như `0.0001`, `0.001`) đã bị `REJECT` với `gain=0`, lần sau phải tăng tiếp gấp 10 lần (ví dụ `0.01` hoặc `0.1`) hoặc đổi sang `optimizer="adam"`.
+- Chọn `verification_epochs` phù hợp độ dài bài toán (từ `1` đến `max_verification_epochs`: nếu `max_verification_epochs >= 8` nên chọn `5`–`10` epoch để đủ bước thấy rõ cải thiện; nếu `max_verification_epochs <= 4` nên chọn `2`–`4` epoch).
 - Chỉ dùng field hoạt động theo `capabilities` và tương thích với `optimizer`/`scheduler` sau khi đổi (ví dụ không đặt `beta1` khi đang dùng `sgd`); chỉ gán `null` cho field cho phép tắt.
 - `patch.reason` phải khớp đúng các field trong `patch.changes`, không chép nhãn `setting`/`active_effect`/`missing_effect`. Nếu giả thuyết mâu thuẫn `current_config`, nêu rõ mâu thuẫn thay vì lặp lại như sự thật.
 - `expected_effect` phải chỉ rõ tên metric và chiều biến động dự kiến; nếu tăng tham số đang bị nghi quá lớn để kiểm chứng thì dự đoán tác hại tương ứng, không khẳng định chắc chắn cải thiện. Không giả định tham số cố định sẽ tự giảm theo epoch.

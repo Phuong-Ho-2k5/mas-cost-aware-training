@@ -21,7 +21,7 @@ candidate_configs:
 
 # Output
 
-{"thought":"...","decision":"...","selected_branch":"...","reason":"..."}
+Trả về duy nhất một JSON object gồm 4 trường: `thought`, `decision`, `selected_branch`, `reason`. Điền nội dung thực tế từ dữ liệu đầu vào cho mọi trường.
 
 # Trường hỗ trợ
 
@@ -33,9 +33,9 @@ candidate_configs:
 # Quy tắc
 
 - Thứ tự quyết định bắt buộc:
-  1. Nếu control là null hoặc mọi giá trị trong trials đều null => trả decision="INCONCLUSIVE" và selected_branch="main".
-  2. Nếu eligible_branches khác rỗng => bắt buộc trả decision="PROMOTE" và chọn branch_id trong eligible_branches có val_accuracy cao nhất (nếu bằng nhau chọn val_loss thấp nhất).
-  3. Nếu eligible_branches rỗng (nhưng control và ít nhất một trial có bản chụp) => trả decision="KEEP_MAIN" và selected_branch="main".
+  1. Nếu `eligible_branches` khác rỗng => BẮT BUỘC trả `decision="PROMOTE"` và chọn `branch_id` trong `eligible_branches` có `val_accuracy` cao nhất (nếu bằng nhau chọn `val_loss` thấp nhất), kể cả khi `control` là `null` do `control_status="NUMERICAL_ERROR"`.
+  2. Nếu `eligible_branches` rỗng và (`control` là `null` hoặc mọi giá trị trong `trials` đều `null`) => trả `decision="INCONCLUSIVE"` và `selected_branch="main"`.
+  3. Nếu `eligible_branches` rỗng nhưng `control` và ít nhất một trial có bản chụp => trả `decision="KEEP_MAIN"` và `selected_branch="main"`.
 - Chỉ so sánh các nhánh có đủ bản chụp tại đúng comparison_epoch; không chọn nhánh không nằm trong eligible_branches khi PROMOTE.
 - Quy kết kết quả cho cả tổ hợp thay đổi trong candidate_configs, không quy kết riêng lẻ một tham số khi nhánh đổi nhiều trường.
 - Chỉ dùng đúng tên nhánh và số liệu trong input; không bịa chỉ số và không bịa gain.

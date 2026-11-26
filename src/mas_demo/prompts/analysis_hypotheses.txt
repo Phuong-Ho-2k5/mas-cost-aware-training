@@ -11,9 +11,10 @@ detection:
 evidence:
 - `epochs`, `recent_events`: các bản ghi epoch đầy đủ từ worker
 
-current_config & config_facts:
+current_config & config_facts & model_summary:
 - `current_config`: cấu hình huấn luyện hiện tại
 - `config_facts`: danh sách `{field, value, active}` phản ánh trạng thái worker đang thực sự áp dụng
+- `model_summary`: tóm tắt kiến trúc hiện tại (`architecture_type`, `num_hidden_layers`, `hidden_activations`, `has_batchnorm`, `exploding_activation`, `vanishing_activation`)
 
 history:
 - lịch sử tối đa 4 round thử nghiệm gần nhất
@@ -23,11 +24,11 @@ repair_attempt (tùy chọn):
 
 # Output
 
-{"thought":"...","hypotheses":[{"hypothesis_id":"...","rank":1,"cause":"...","mechanism":"...","evidence_epochs":[...],"confidence":0.5,"config_claims":[{"field":"<ten_field>","observed_value":"<gia_tri_trong_current_config>","claim":"setting|active_effect|missing_effect"}]}],"reason":"..."}
+Trả về duy nhất một JSON object gồm các trường: `thought`, `hypotheses` (danh sách 1–3 object gồm `hypothesis_id`, `rank`, `cause`, `mechanism`, `evidence_epochs`, `confidence`, `config_claims`), và `reason`. Điền nội dung thực tế từ dữ liệu đầu vào cho mọi trường.
 
 # Trường hỗ trợ
 
-- `thought` (str, ≤240 ký tự): suy luận ngắn 1–2 câu đối chiếu `detection`, logs và `config_facts` trước khi sinh giả thuyết
+- `thought` (str, ≤240 ký tự): viết 1–2 câu văn xuôi ngắn (không dùng `>-`, `<br>`, gạch đầu dòng) chốt thẳng nguyên nhân chính từ `window_summary`, `model_summary` và `config_facts` trước khi sinh giả thuyết
 - `hypotheses` (list[object]): từ 1 đến tối đa 3 giả thuyết về các cơ chế nguyên nhân khác nhau
   - `hypothesis_id` (str, ≤48 ký tự): mã định danh duy nhất cho mỗi giả thuyết
   - `rank` (int): thứ hạng ưu tiên kiểm chứng nguyên từ `1` đến `N`, mỗi hạng dùng đúng một lần (`1` ưu tiên cao nhất, độc lập với vị trí mảng và `confidence`)
@@ -46,10 +47,19 @@ repair_attempt (tùy chọn):
 - Kết quả `detection` đã khóa: không đổi `status`, không trả `ABSTAIN`, không đề xuất giá trị trial hay can thiệp.
 - Chỉ trả các cơ chế thực sự có căn cứ (1 hoặc 2 giả thuyết là hợp lệ); không nhân bản hay diễn đạt lại cùng một cơ chế để đủ 3.
 - Triệu chứng (như accuracy giảm, loss dao động) không phải nguyên nhân; phải nêu cơ chế gây ra triệu chứng đó.
+- Thứ tự ưu tiên chẩn đoán theo `window_summary`, `model_summary` và `config_facts`:
+  - Khi `window_summary.numerical_error=true` và `model_summary.exploding_activation=true`: **BẮT BUỘC đặt `rank=1` là `hidden_activation`** (hàm kích hoạt `exponential` gây tràn số/nổ gradient, khai báo duy nhất `config_claims` với `field="hidden_activation"`, `observed_value="keep"`, `claim="setting"` và không nhắc tên trường khác trong `cause`/`mechanism`).
+  - Khi `stalled_window=true` (loss không giảm, accuracy đứng yên):
+    1. Nếu `learning_rate <= 1e-4` (đặc biệt với `sgd` hoặc `adam`): **ưu tiên chẩn đoán `learning_rate` quá nhỏ**.
+    2. Nếu `model_summary.vanishing_activation=true` (nhiều lớp ẩn `sigmoid`/`tanh` liên tiếp không có BatchNorm): **ưu tiên chẩn đoán `hidden_activation`** (triệt tiêu gradient `vanishing gradient`, dùng `field="hidden_activation"`, `observed_value="keep"`, `claim="setting"`) hoặc thiếu `use_batchnorm` (`field="use_batchnorm"`, `observed_value=false`, `claim="missing_effect"`).
+    3. Sau đó mới xét `optimizer`, `batch_size`, `momentum`.
+  - Khi `unstable_window=true` (loss tăng vọt/dao động mạnh/NaN mà không phải `exploding_activation`): kiểm tra `learning_rate` quá lớn, thiếu `grad_clip_norm`, hoặc `momentum` quá cao trước tiên.
+  - **`scheduler="none"` và `weight_decay=0.0` là mặc định hoàn toàn bình thường**, KHÔNG phải nguyên nhân khiến model không học được (`stalled_window`); chỉ xét `weight_decay` khi có overfitting (`train_loss` giảm rõ nhưng `val_loss` tăng).
 - Dùng `evidence_epochs` là các epoch thật trong logs; nhận định biến động giữa hai epoch phải gồm cả hai đầu mút. Không bịa số đo; không coi metadata như `peak_vram_mb=null`, `config_hash` hay `branch_id` là nguyên nhân lỗi dữ liệu hoặc lỗi khởi động model.
-- Mọi field cấu hình xuất hiện trong `cause` hoặc `mechanism` đều phải có đúng một `config_claim` với `observed_value` khớp `config_facts`. Chỉ để `config_claims: []` khi cơ chế không nhắc tới field cấu hình nào.
+- Mọi trường văn bản (`hypothesis_id`, `cause`, `mechanism`, `reason`) phải là nội dung tiếng Việt cụ thể theo dữ liệu thực, không để trống hay viết ký tự giữ chỗ.
+- Mỗi giả thuyết nên tập trung vào **đúng 1 field cấu hình** trong `cause` và `mechanism`, kèm đúng 1 phần tử tương ứng trong `config_claims` với `observed_value` khớp `config_facts`. Nếu nhắc nhiều hơn 1 field trong `cause` hoặc `mechanism` (kể cả từ đồng nghĩa như "tốc độ học", "clipping", "bộ tối ưu") thì BẮT BUỘC khai báo đủ mọi field đó trong `config_claims`. Chỉ để `config_claims: []` khi không nhắc tới field cấu hình nào.
 - Bắt buộc khớp trạng thái `active` trong `config_facts`:
   - `active=true` (ví dụ SGD có `momentum>0`): không được dùng `missing_effect` và không viết trong prose rằng field đó "thiếu"/"không hoạt động"; nếu nghi chưa phù hợp hãy nói quá lớn/quá nhỏ với `claim="setting"` hoặc `active_effect`.
   - `active=false` (ví dụ `grad_clip_norm=null`, `weight_decay=0.0`): không được dùng `active_effect` và không viết rằng thành phần đó đang tác động; có thể giả thuyết sự thiếu vắng nó với `claim="missing_effect"`.
 - Chỉ quy tác động cho tham số mà optimizer/scheduler hiện tại thực sự dùng (`scheduler` chỉ chỉnh LR, không quyết định clipping hay momentum).
-- Nếu có `repair_attempt`, sửa đúng `validation_errors` (cause, claim, rank hoặc epoch); bỏ bản trùng thay vì chỉ đổi ID/cách diễn đạt.
+- Nếu có `repair_attempt`, sửa triệt để toàn bộ `validation_errors`: khi gặp `undeclared_config_claim` (có danh sách `fields`), phải thêm đủ các field thiếu vào `config_claims` theo `config_facts` HOẶC bỏ hẳn tên các field đó khỏi `cause` và `mechanism`; bỏ bản trùng thay vì chỉ đổi ID/cách diễn đạt.

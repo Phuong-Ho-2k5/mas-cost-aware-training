@@ -2,7 +2,7 @@
 from collections import defaultdict
 import re
 import unicodedata
-from mas_demo.observation.facts import fact_has_measurement
+from mas_demo.observation.facts import build_window_summary, fact_has_measurement
 from mas_demo.agents.config_grounding import explicit_config_references
 
 
@@ -14,6 +14,12 @@ def validate_epoch_detection(response, evidence):
     if response.status == "DIAGNOSED":
         if not refs:
             return [dict(code="missing_epoch_records", reason="DIAGNOSED cần viện dẫn bản ghi worker có thật")]
+    elif response.status == "ABSTAIN":
+        summary = build_window_summary(evidence)
+        if summary["numerical_error"] or summary["stalled_window"] or summary["unstable_window"]:
+            flag = "numerical_error=true" if summary["numerical_error"] else "stalled_window=true" if summary["stalled_window"] else "unstable_window=true"
+            return [dict(code="contradicts_window_summary",
+                         reason=f"window_summary báo {flag}; bắt buộc trả status='DIAGNOSED' kèm evidence_epochs từ logs")]
     return []
 
 

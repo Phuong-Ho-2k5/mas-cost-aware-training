@@ -1,7 +1,7 @@
 """Protocol v3: autonomous proposals and one shared verification horizon."""
 
 from typing import Literal
-from pydantic import BaseModel, ConfigDict, Field, model_validator, StrictStr, StrictInt, StrictFloat
+from pydantic import BaseModel, ConfigDict, Field, model_validator, StrictBool, StrictStr, StrictInt, StrictFloat
 
 
 class Record(BaseModel):
@@ -9,45 +9,58 @@ class Record(BaseModel):
 
 
 class TrainingConfig(Record):
-    optimizer: Literal["sgd", "adam", "adamw"] = "sgd"
+    optimizer: Literal["sgd", "adam", "adamw", "rmsprop"] = "sgd"
     learning_rate: float = Field(0.01, ge=0, strict=True)
     momentum: float = Field(0.9, ge=0, lt=1, strict=True)
     weight_decay: float = Field(0.0, ge=0, strict=True)
     grad_clip_norm: float | None = Field(None, gt=0, strict=True)
+    grad_clip_value: float | None = Field(None, gt=0, strict=True)
+    label_smoothing: float = Field(0.0, ge=0, lt=1, strict=True)
     batch_size: int = Field(16, gt=0, strict=True)
     gradient_accumulation: int = Field(1, gt=0, strict=True)
     beta1: float = Field(0.9, ge=0, lt=1, strict=True)
     beta2: float = Field(0.999, ge=0, lt=1, strict=True)
     epsilon: float = Field(1e-8, gt=0, strict=True)
-    scheduler: Literal["none", "step", "cosine"] = "none"
+    scheduler: Literal["none", "step", "cosine", "plateau"] = "none"
     scheduler_step_size: int = Field(100, gt=0, strict=True)
     scheduler_gamma: float = Field(0.1, gt=0, strict=True)
     scheduler_t_max: int = Field(100, gt=0, strict=True)
+    scheduler_patience: int = Field(5, gt=0, strict=True)
     early_stop_patience: int | None = Field(None, gt=0, strict=True)
+    hidden_activation: Literal["keep", "relu", "selu", "leaky_relu", "tanh"] = "keep"
+    use_batchnorm: bool = False
+    weight_init: Literal["keep", "xavier", "kaiming", "lecun"] = "keep"
 
 
 class TrainingPatch(Record):
-    optimizer: Literal["sgd", "adam", "adamw"] = None
+    optimizer: Literal["sgd", "adam", "adamw", "rmsprop"] = None
     learning_rate: float = Field(None, gt=0, strict=True)
     momentum: float = Field(None, ge=0, lt=1, strict=True)
     weight_decay: float = Field(None, ge=0, strict=True)
     grad_clip_norm: float | None = Field(None, gt=0, strict=True)
+    grad_clip_value: float | None = Field(None, gt=0, strict=True)
+    label_smoothing: float = Field(None, ge=0, lt=1, strict=True)
     batch_size: int = Field(None, gt=0, strict=True)
     gradient_accumulation: int = Field(None, gt=0, strict=True)
     beta1: float = Field(None, ge=0, lt=1, strict=True)
     beta2: float = Field(None, ge=0, lt=1, strict=True)
     epsilon: float = Field(None, gt=0, strict=True)
-    scheduler: Literal["none", "step", "cosine"] = None
+    scheduler: Literal["none", "step", "cosine", "plateau"] = None
     scheduler_step_size: int = Field(None, gt=0, strict=True)
     scheduler_gamma: float = Field(None, gt=0, strict=True)
     scheduler_t_max: int = Field(None, gt=0, strict=True)
+    scheduler_patience: int = Field(None, gt=0, strict=True)
     early_stop_patience: int | None = Field(None, gt=0, strict=True)
+    hidden_activation: Literal["keep", "relu", "selu", "leaky_relu", "tanh"] = None
+    use_batchnorm: StrictBool = None
+    weight_init: Literal["keep", "xavier", "kaiming", "lecun"] = None
 
     @model_validator(mode="after")
     def valid_nulls(self):
         for name in self.model_fields_set:
             if getattr(self, name) is None and name not in (
                 "grad_clip_norm",
+                "grad_clip_value",
                 "early_stop_patience",
             ):
                 raise ValueError(f"{name} cannot be null")
@@ -57,6 +70,7 @@ class TrainingPatch(Record):
 class ExperimentPolicy(Record):
     max_epochs: int = Field(10, gt=0, strict=True)
     max_trials: int = Field(3, ge=0, le=8, strict=True)
+    max_verification_epochs: int = Field(4, gt=0, strict=True)
     budget_seconds: float = Field(900, gt=0)
     min_gain: float = Field(0.005, ge=0, le=1)
     epoch_seconds_estimate: float = Field(20, gt=0)
@@ -67,24 +81,26 @@ class ExperimentPolicy(Record):
 
 class TaskSpec(Record):
     schema_version: Literal[3] = 3
-    dataset: Literal["cifar10", "synthetic", "blobs"] = "cifar10"
+    dataset: Literal["cifar10", "synthetic", "blobs", "circle", "mnist"] = "cifar10"
     data_dir: str = "data"
     device: Literal["auto", "cpu", "cuda"] = "cpu"
     seed: int = 11
-    train_samples: int = Field(4096, gt=0, le=45000)
-    val_samples: int = Field(1024, gt=0, le=5000)
+    train_samples: int = Field(4096, gt=0, le=60000)
+    val_samples: int = Field(1024, gt=0, le=10000)
     training: TrainingConfig = Field(default_factory=TrainingConfig)
     policy: ExperimentPolicy = Field(default_factory=ExperimentPolicy)
-    observation_interval: Literal[1] = 1
+    observation_interval: int = Field(2, ge=1, le=5, strict=True)
     window: int = Field(5, ge=1, le=8)
     unit_guard_seconds: float = Field(0.2, gt=0)
     analysis_mode: Literal["vllm"] = "vllm"
     model_id: str = "Qwen/Qwen3.5-0.8B"
+    model_spec_path: str | None = None
+    initial_weights_path: str | None = None
 
     @model_validator(mode="before")
     @classmethod
     def blobs_sample_defaults(cls, values):
-        if isinstance(values, dict) and values.get("dataset") == "blobs":
+        if isinstance(values, dict) and values.get("dataset") in ("blobs", "circle"):
             values = dict(values)
             values.setdefault("train_samples", 700)
             values.setdefault("val_samples", 300)
@@ -92,11 +108,11 @@ class TaskSpec(Record):
 
     @model_validator(mode="after")
     def validate_blobs_split(self):
-        if self.dataset == "blobs" and (
+        if self.dataset in ("blobs", "circle") and (
             self.train_samples > 700 or self.val_samples > 300
         ):
             raise ValueError(
-                "Blobs uses the fixed AUTOTRAINER split: at most 700 train / 300 validation"
+                f"{self.dataset} uses the fixed AUTOTRAINER split: at most 700 train / 300 validation"
             )
         return self
 
@@ -180,7 +196,7 @@ class EvidenceWindow(Record):
 
 class ConfigClaim(Record):
     field: str
-    observed_value: StrictStr | StrictInt | StrictFloat | None
+    observed_value: StrictBool | StrictStr | StrictInt | StrictFloat | None
     claim: Literal["active_effect", "missing_effect", "setting"]
 
 
@@ -232,7 +248,7 @@ class DetectionResponse(Record):
 
 class ConfigFact(Record):
     field: str
-    value: StrictStr | StrictInt | StrictFloat | None
+    value: StrictBool | StrictStr | StrictInt | StrictFloat | None
     active: bool
 
 
@@ -372,6 +388,6 @@ class AdmissionBatch(Record):
 
 class VerificationRoundResult(Record):
     comparison_epoch: int
-    fork_ref: CheckpointRef
+    fork_ref: CheckpointRef | None = None
     control: SegmentResult
     trials: dict[str, SegmentResult] = Field(default_factory=dict)

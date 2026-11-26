@@ -13,6 +13,7 @@ def evaluate_with_agent(
     gateway=None,
     candidates=None,
     verification_epochs=None,
+    control_status="COMPLETE",
 ):
     def snapshot(events):
         return next(
@@ -28,14 +29,18 @@ def evaluate_with_agent(
 
     base = snapshot(control)
     snapshots = {name: snapshot(events) for name, events in trials.items()}
-    eligible = {
-        name: e
-        for name, e in snapshots.items()
-        if base is not None
-        and e is not None
-        and e.val_accuracy - base.val_accuracy >= spec.min_gain
-        and e.val_loss <= base.val_loss
-    }
+    control_exploded = base is None and control_status == "NUMERICAL_ERROR"
+    if control_exploded:
+        eligible = {name: e for name, e in snapshots.items() if e is not None}
+    else:
+        eligible = {
+            name: e
+            for name, e in snapshots.items()
+            if base is not None
+            and e is not None
+            and e.val_accuracy - base.val_accuracy >= spec.min_gain
+            and e.val_loss <= base.val_loss
+        }
     metadata = {}
     try:
         gateway = gateway or create_gateway(spec)
@@ -45,11 +50,12 @@ def evaluate_with_agent(
                 "schema_version": 3,
                 "candidate_configs": {
                     name: config for name, config in (candidates or {}).items()
-                    if base is not None and snapshots.get(name) is not None
+                    if (base is not None or control_exploded) and snapshots.get(name) is not None
                 },
                 "verification_epochs": verification_epochs,
                 "comparison_epoch": comparison_epoch,
                 "min_gain": spec.min_gain,
+                "control_status": control_status,
                 "control": base.model_dump() if base else None,
                 "trials": {
                     name: e.model_dump() if e else None for name, e in snapshots.items()
@@ -67,7 +73,7 @@ def evaluate_with_agent(
                 EvalVerdict(
                     **response.model_dump(),
                     gain=eligible[response.selected_branch].val_accuracy
-                    - base.val_accuracy
+                    - (base.val_accuracy if base is not None else 0.0)
                 ),
                 metadata,
             )

@@ -9,13 +9,19 @@ st.caption("Theo dõi → phát hiện → thử sửa → đánh giá → tiế
 root = Path(__file__).resolve().parents[1]
 default_runs = root / "artifacts"
 folder = Path(st.sidebar.text_input("Thư mục artifacts", str(default_runs)))
-runs = sorted([p.parent for p in folder.glob("*/state.json")], reverse=True)
+runs = sorted(
+    [p.parent for p in folder.rglob("state.json")],
+    key=lambda d: (d / "state.json").stat().st_mtime,
+    reverse=True,
+)
 if not runs:
     st.info(
         "Chưa có run. Chạy: python -m mas_demo.cli run --config configs/autonomous_mixed.yaml"
     )
     st.stop()
-selected = st.sidebar.selectbox("Run", runs, format_func=lambda p: p.name)
+selected = st.sidebar.selectbox(
+    "Run", runs, format_func=lambda p: p.relative_to(folder).as_posix()
+)
 st.sidebar.caption(
     "Dashboard chỉ đọc artifacts. Training chạy bằng CLI ở terminal riêng."
 )

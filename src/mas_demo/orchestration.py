@@ -12,7 +12,7 @@ from mas_demo.configuration import (
     training_capabilities,
     ProposalError,
 )
-from mas_demo.contracts import TaskSpec, EpochEvent, TrainingConfig, CheckpointRef
+from mas_demo.contracts import TaskSpec, EpochEvent, EvidenceWindow, TrainingConfig, CheckpointRef
 from mas_demo.control.budget import BudgetLedger
 from mas_demo.control.controller import admit_plan
 from mas_demo.control.verification import verify_round
@@ -162,14 +162,21 @@ def _run(spec, directory, resume, backend, gateway):
         state["llm_seconds"] += metadata.get("latency_seconds", 0)
 
     save(status="RUNNING")
+    numerical_recovery_attempts = 0
     try:
         while state["epoch"] < spec.max_epochs:
             if (directory / "stop.flag").exists():
                 save(status="PAUSED", reason="Stop requested at a safe boundary")
                 return state
-            requested = (estimate + policy.worker_overhead_seconds) * (
+            epochs_to_run = min(spec.observation_interval, spec.max_epochs - state["epoch"])
+            requested = (estimate * epochs_to_run + policy.worker_overhead_seconds) * (
                 1 + policy.safety_margin
             )
+            if epochs_to_run > 1 and requested > ledger.available:
+                epochs_to_run = 1
+                requested = (estimate + policy.worker_overhead_seconds) * (
+                    1 + policy.safety_margin
+                )
             if not ledger.reserve("main", requested):
                 save(
                     status="BUDGET_EXHAUSTED",
@@ -179,20 +186,52 @@ def _run(spec, directory, resume, backend, gateway):
             save(phase="training")
             output = directory / "segments" / f"main-after-{state['epoch']:04}"
             segment = backend.run(
-                spec, checkpoint, 1, "main", output, requested, training_config=active
+                spec, checkpoint, epochs_to_run, "main", output, requested, training_config=active
             )
             ledger.settle("main", segment.seconds)
             append_event(log, "segment", result=segment, output=str(output))
             commit_segment(segment)
             save()
-            if segment.status not in ("COMPLETE", "EARLY_STOPPED"):
+            if segment.status == "NUMERICAL_ERROR":
+                if numerical_recovery_attempts >= 2:
+                    save(
+                        status="NUMERICAL_ERROR",
+                        reason=segment.error or "Numerical error persisted after recovery attempts",
+                    )
+                    return state
+                numerical_recovery_attempts += 1
+                failed_event = EpochEvent(
+                    epoch=state["epoch"] + 1,
+                    branch_id="main",
+                    train_loss=None,
+                    val_loss=None,
+                    val_accuracy=None,
+                    learning_rate=active.learning_rate,
+                    grad_norm=None,
+                    momentum=active.momentum if active.optimizer in ("sgd", "rmsprop") else None,
+                    weight_decay=active.weight_decay,
+                    grad_clip_norm=active.grad_clip_norm,
+                    config_hash=config_hash(active),
+                )
+                recent = [e for e in history if e.branch_id == "main"][-(spec.window - 1):] if spec.window > 1 else []
+                recent.append(failed_event)
+                evidence = EvidenceWindow(
+                    epochs=[e.epoch for e in recent],
+                    branch_id="main",
+                    status="READY",
+                    recent_events=recent,
+                    quality_flags=["numerical_error"],
+                )
+            elif segment.status not in ("COMPLETE", "EARLY_STOPPED"):
                 save(
                     status=segment.status,
                     reason=segment.error or "Main segment incomplete or early-stopped",
                 )
                 return state
-            # Only accepted lineage segments are in history; keep worker IDs.
-            evidence = build_evidence(history, "main", spec.window, selected_lineage=True)
+            else:
+                numerical_recovery_attempts = 0
+                # Only accepted lineage segments are in history; keep worker IDs.
+                evidence = build_evidence(history, "main", spec.window, selected_lineage=True)
             state["round"] += 1
             number = state["round"]
             append_event(log, "evidence", evidence=evidence)
@@ -268,6 +307,13 @@ def _run(spec, directory, resume, backend, gateway):
                             "INVALID_MODEL_RESPONSE",
                             metadata.get("error", "Planner response invalid"),
                         )
+                    rejected_hashes = {
+                        row["config_hash"]
+                        for row in previous
+                        if row.get("base_config_hash") == config_hash(active)
+                        and row.get("status") == "REJECT"
+                        and row.get("config_hash")
+                    }
                     compiled = compile_plan(
                         active,
                         response,
@@ -275,6 +321,7 @@ def _run(spec, directory, resume, backend, gateway):
                         evidence.epochs,
                         remaining,
                         {h.hypothesis_id: h.rank for h in diagnosis.hypotheses},
+                        rejected_hashes=rejected_hashes,
                     )
                     break
                 except ProposalError as error:
@@ -356,9 +403,11 @@ def _run(spec, directory, resume, backend, gateway):
                 candidates={
                     candidate.trial_id: candidate.model_dump()
                     for candidate in admission.approved
-                    if candidate.trial_id in valid_trials and outcome.control.status == "COMPLETE"
+                    if candidate.trial_id in valid_trials
+                    and outcome.control.status in ("COMPLETE", "NUMERICAL_ERROR")
                 },
                 verification_epochs=admission.horizon,
+                control_status=outcome.control.status,
             )
             agent_cost(metadata)
             append_event(
@@ -417,7 +466,19 @@ def _run(spec, directory, resume, backend, gateway):
                 )
             if selected.status == "COMPLETE":
                 commit_segment(selected)
+                if verdict.decision == "PROMOTE":
+                    numerical_recovery_attempts = 0
             save()
+            if outcome.control.status == "NUMERICAL_ERROR":
+                if verdict.decision == "PROMOTE" and selected.status == "COMPLETE":
+                    continue
+                if numerical_recovery_attempts >= 2:
+                    save(
+                        status="NUMERICAL_ERROR",
+                        reason="Control hit NUMERICAL_ERROR and no trial recovered",
+                    )
+                    return state
+                continue
             if outcome.control.status != "COMPLETE":
                 save(
                     status="INCONCLUSIVE",

@@ -14,6 +14,8 @@ ALIASES = {
     "momentum": ("momentum",),
     "weight_decay": ("weight decay",),
     "grad_clip_norm": ("grad clip norm", "gradient clipping", "grad clipping", "clipping"),
+    "grad_clip_value": ("grad clip value", "value clipping"),
+    "label_smoothing": ("label smoothing", "làm mịn nhãn"),
     "batch_size": ("batch size", "kích thước batch"),
     "gradient_accumulation": ("gradient accumulation",),
     "beta1": ("beta1",), "beta2": ("beta2",), "epsilon": ("epsilon",),
@@ -21,7 +23,11 @@ ALIASES = {
     "scheduler_step_size": ("scheduler step size",),
     "scheduler_gamma": ("scheduler gamma",),
     "scheduler_t_max": ("scheduler t max",),
+    "scheduler_patience": ("scheduler patience",),
     "early_stop_patience": ("early stop patience", "early stopping"),
+    "hidden_activation": ("hidden activation",),
+    "use_batchnorm": ("use batchnorm",),
+    "weight_init": ("weight init", "weight initialization"),
 }
 
 

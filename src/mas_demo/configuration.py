@@ -21,7 +21,20 @@ class ProposalError(ValueError):
 
 
 def config_hash(config):
-    value = config.model_dump(mode="json") if hasattr(config, "model_dump") else config
+    value = dict(config.model_dump(mode="json") if hasattr(config, "model_dump") else config)
+    # Preserve historical v3 config hashes when Level-1/Level-2 optional fields stay at inert defaults.
+    if value.get("grad_clip_value") is None:
+        value.pop("grad_clip_value", None)
+    if value.get("label_smoothing", 0.0) == 0.0:
+        value.pop("label_smoothing", None)
+    if value.get("scheduler") != "plateau" and value.get("scheduler_patience", 5) == 5:
+        value.pop("scheduler_patience", None)
+    if value.get("hidden_activation", "keep") == "keep":
+        value.pop("hidden_activation", None)
+    if value.get("use_batchnorm", False) is False:
+        value.pop("use_batchnorm", None)
+    if value.get("weight_init", "keep") == "keep":
+        value.pop("weight_init", None)
     canonical = json.dumps(
         value, sort_keys=True, separators=(",", ":"), allow_nan=False
     )
@@ -33,15 +46,18 @@ def training_capabilities():
         "supported_fields": list(TrainingPatch.model_fields),
         "constraints": "Use field types and bounds in the response JSON schema; all numbers must be finite.",
         "semantics": "Absolute settings, applied together at an epoch boundary.",
-        "null_disables": ["grad_clip_norm", "early_stop_patience"],
+        "null_disables": ["grad_clip_norm", "grad_clip_value", "early_stop_patience"],
         "component_options": {
             "sgd": ["momentum"],
+            "rmsprop": ["momentum", "epsilon"],
             "adam_or_adamw": ["beta1", "beta2", "epsilon"],
             "step": ["scheduler_step_size", "scheduler_gamma"],
             "cosine": ["scheduler_t_max"],
+            "plateau": ["scheduler_gamma", "scheduler_patience"],
         },
         "optimizer_change": "Weights retained; incompatible optimizer state reset.",
         "scheduler_change": "Scheduler reset when its type or configuration changes.",
+        "architecture_change": "hidden_activation/use_batchnorm/weight_init modify hidden layers (output layer preserved); incompatible weights/optimizer state reset cleanly.",
         "comparison": "Complete epochs; all branches use the same model-chosen horizon.",
     }
 
@@ -60,11 +76,18 @@ def compile_proposal(current, proposal, capabilities=None):
         candidate = TrainingConfig.model_validate(values)
     except ValidationError as error:
         raise ProposalError("INVALID_CONFIG", str(error)) from error
-    inactive = (
-        {"beta1", "beta2", "epsilon"} if candidate.optimizer == "sgd" else {"momentum"}
-    )
+    if candidate.optimizer == "sgd":
+        inactive = {"beta1", "beta2", "epsilon"}
+    elif candidate.optimizer == "rmsprop":
+        inactive = {"beta1", "beta2"}
+    else:
+        inactive = {"momentum"}
     if candidate.scheduler != "step":
-        inactive |= {"scheduler_step_size", "scheduler_gamma"}
+        inactive.add("scheduler_step_size")
+    if candidate.scheduler not in ("step", "plateau"):
+        inactive.add("scheduler_gamma")
+    if candidate.scheduler != "plateau":
+        inactive.add("scheduler_patience")
     if candidate.scheduler != "cosine":
         inactive.add("scheduler_t_max")
     if inactive & changes.keys():
@@ -83,6 +106,37 @@ def compile_proposal(current, proposal, capabilities=None):
         raise ProposalError(
             "NO_OP", "Candidate is identical to the active configuration"
         )
+    # Reject micro-tweaks that only bypass != current_config without meaningful training impact.
+    meaningful = False
+    for key, pair in diff.items():
+        b, a = pair["before"], pair["after"]
+        if key in ("optimizer", "scheduler", "batch_size", "gradient_accumulation", "early_stop_patience",
+                   "scheduler_step_size", "scheduler_t_max", "scheduler_patience",
+                   "hidden_activation", "use_batchnorm", "weight_init"):
+            meaningful = True
+        elif key == "momentum":
+            if abs(a - b) >= 0.02:
+                meaningful = True
+        elif key == "weight_decay":
+            if (b == 0.0 and a >= 1e-4) or (b > 0.0 and (a == 0.0 or abs(a - b) / b >= 0.15)):
+                meaningful = True
+        elif key == "learning_rate":
+            if b == 0.0 or abs(a - b) / max(abs(b), 1e-12) >= 0.15:
+                meaningful = True
+        elif key in ("grad_clip_norm", "grad_clip_value"):
+            if b is None or a is None or abs(a - b) / max(abs(b), 1e-12) >= 0.15:
+                meaningful = True
+        elif key == "label_smoothing":
+            if abs(a - b) >= 0.01:
+                meaningful = True
+        else:
+            meaningful = True
+    if not meaningful:
+        raise ProposalError(
+            "NEGLIGIBLE_CHANGE",
+            "Patch changes are too small to meaningfully affect training (e.g. momentum delta < 0.02, lr delta < 15%, weight_decay < 1e-4)",
+            diff=diff,
+        )
     return CompiledProposal(
         trial_id="",
         proposal_id=proposal.proposal_id,
@@ -96,7 +150,8 @@ def compile_proposal(current, proposal, capabilities=None):
 
 
 def compile_plan(
-    current, response, policy, evidence_epochs, remaining_epochs, hypothesis_ranks
+    current, response, policy, evidence_epochs, remaining_epochs, hypothesis_ranks,
+    rejected_hashes=None,
 ):
     if not response.proposals:
         if hypothesis_ranks:
@@ -143,6 +198,13 @@ def compile_plan(
         ) <= set(evidence_epochs):
             raise ProposalError("UNAVAILABLE_EVIDENCE", "Unavailable evidence epochs")
         compiled = compile_proposal(current, proposal)
+        if rejected_hashes and compiled.config_hash in rejected_hashes:
+            raise ProposalError(
+                "ALREADY_TRIED",
+                "This exact configuration was already tried and REJECTED from the same base config; choose a substantially stronger or different value (e.g. 10x larger learning_rate like 0.01 or 0.1, or switch optimizer to adam).",
+                config_hash=compiled.config_hash,
+                diff=compiled.diff,
+            )
         compiled.hypothesis_rank = hypothesis_ranks[proposal.hypothesis_id]
         group = config_groups.setdefault(compiled.config_hash, dict(
             config_hash=compiled.config_hash, proposal_ids=[], hypothesis_ids=[], patches=[]))
